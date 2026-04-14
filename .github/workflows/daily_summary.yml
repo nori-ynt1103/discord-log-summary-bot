@@ -1,0 +1,28 @@
+name: Discord Daily Summary
+
+on:
+  schedule:
+    - cron: "0 23 * * *"  # 毎日 23:00 UTC = 翌8:00 JST
+  workflow_dispatch:       # GitHub画面から手動実行も可能
+
+jobs:
+  summarize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run summary
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          SOURCE_CHANNEL_IDS: ${{ secrets.SOURCE_CHANNEL_IDS }}
+          SUMMARY_CHANNEL_ID: ${{ secrets.SUMMARY_CHANNEL_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python3 main.py
