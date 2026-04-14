@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "0 21 * * *"  # 毎日 21:00 UTC = 翌6:00 JST
   workflow_dispatch:       # GitHub画面から手動実行も可能
+  push:
+    branches:
+      - main
 
 jobs:
   summarize:
