@@ -43,18 +43,18 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
         target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=JST
     )
     end_jst = start_jst + timedelta(days=1)
-
-    after_snowflake = datetime_to_snowflake(start_jst) - 1
+    start_utc = start_jst.astimezone(timezone.utc)
     end_utc = end_jst.astimezone(timezone.utc)
 
+    # 対象日の終端スノーフレークから before で遡る
+    last_id = str(datetime_to_snowflake(end_jst))
     messages = []
-    last_id = str(after_snowflake)
 
     while True:
         resp = requests.get(
             f"{BASE_URL}/channels/{channel_id}/messages",
             headers=HEADERS,
-            params={"limit": 100, "after": last_id},
+            params={"limit": 100, "before": last_id},
         )
         resp.raise_for_status()
         batch = resp.json()
@@ -62,21 +62,28 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
         if not batch:
             break
 
-        # Discord は after 指定時、古い順で返ってくる
+        # before は新しい順で返ってくる
+        reached_start = False
         for msg in batch:
             ts = datetime.fromisoformat(msg["timestamp"].replace("Z", "+00:00"))
-            if ts >= end_utc:
-                return messages  # 対象日を超えた
-            messages.append({
-                "timestamp": ts.astimezone(JST).strftime("%H:%M"),
-                "author": msg["author"].get("global_name") or msg["author"]["username"],
-                "content": msg["content"],
-                "attachments": " | ".join(a["url"] for a in msg.get("attachments", [])),
-            })
+            if ts < start_utc:
+                reached_start = True
+                break
+            if ts < end_utc:
+                messages.append({
+                    "timestamp": ts.astimezone(JST).strftime("%H:%M"),
+                    "author": msg["author"].get("global_name") or msg["author"]["username"],
+                    "content": msg["content"],
+                    "attachments": " | ".join(a["url"] for a in msg.get("attachments", [])),
+                })
+
+        if reached_start:
+            break
 
         last_id = batch[-1]["id"]
-        time.sleep(0.5)  # レートリミット対策
+        time.sleep(0.5)
 
+    messages.reverse()  # 古い順に並べ直す
     return messages
 
 
