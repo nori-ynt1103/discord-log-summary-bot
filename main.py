@@ -1,11 +1,11 @@
 """
 Discord 日報生成スクリプト
-- 指定チャンネルの前日メッセージを取得
-- Claude APIで要約
-- 指定チャンネルに投稿
+- servers.json に定義されたサーバーごとにメッセージを取得
+- Claude APIで要約して各サーバーの投稿先チャンネルに投稿
 GitHub Actionsで毎日定時実行する。
 """
 
+import json
 import os
 import time
 import requests
@@ -16,19 +16,19 @@ from summarizer import Summarizer
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-SOURCE_CHANNEL_IDS = [
-    int(x.strip())
-    for x in os.getenv("SOURCE_CHANNEL_IDS", "").split(",")
-    if x.strip()
-]
-SUMMARY_CHANNEL_ID = int(os.getenv("SUMMARY_CHANNEL_ID", "0"))
-
 JST = timezone(timedelta(hours=9))
 BASE_URL = "https://discord.com/api/v10"
 HEADERS = {
     "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
     "Content-Type": "application/json",
 }
+
+
+def load_servers() -> list[dict]:
+    """servers.json からサーバー設定を読み込む。"""
+    config_path = os.path.join(os.path.dirname(__file__), "servers.json")
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def datetime_to_snowflake(dt: datetime) -> int:
@@ -46,12 +46,8 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
     start_utc = start_jst.astimezone(timezone.utc)
     end_utc = end_jst.astimezone(timezone.utc)
 
-    # 対象日の終端スノーフレークから before で遡る
     last_id = str(datetime_to_snowflake(end_jst))
     messages = []
-
-    print(f"  [DEBUG] start_utc={start_utc}, end_utc={end_utc}")
-    print(f"  [DEBUG] before_snowflake={last_id}")
 
     while True:
         resp = requests.get(
@@ -59,14 +55,12 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
             headers=HEADERS,
             params={"limit": 100, "before": last_id},
         )
-        print(f"  [DEBUG] API status={resp.status_code}, batch_size={len(resp.json()) if resp.ok else 'error'}")
         resp.raise_for_status()
         batch = resp.json()
 
         if not batch:
             break
 
-        # before は新しい順で返ってくる
         reached_start = False
         for msg in batch:
             ts = datetime.fromisoformat(msg["timestamp"].replace("Z", "+00:00"))
@@ -87,7 +81,7 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
         last_id = batch[-1]["id"]
         time.sleep(0.5)
 
-    messages.reverse()  # 古い順に並べ直す
+    messages.reverse()
     return messages
 
 
@@ -121,19 +115,19 @@ def post_message(channel_id: int, content: str):
         time.sleep(0.5)
 
 
-def main():
-    now_utc = datetime.now(timezone.utc)
-    now_jst = datetime.now(JST)
-    target_date = (now_jst - timedelta(days=1)).date()
+def process_server(server: dict, target_date, summarizer: Summarizer):
+    """1サーバー分の取得・要約・投稿を行う。"""
+    name = server["name"]
+    source_ids = server["source_channel_ids"]
+    summary_channel_id = server["summary_channel_id"]
     date_str = target_date.strftime("%Y/%m/%d")
-    print(f"現在時刻 UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"現在時刻 JST: {now_jst.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"対象日: {date_str}")
+
+    print(f"\n=== {name} ===")
 
     all_messages = []
     channel_names = []
 
-    for ch_id in SOURCE_CHANNEL_IDS:
+    for ch_id in source_ids:
         ch_name = get_channel_name(ch_id)
         channel_names.append(ch_name)
         print(f"#{ch_name} からメッセージ取得中...")
@@ -146,20 +140,35 @@ def main():
 
     if not all_messages:
         post_message(
-            SUMMARY_CHANNEL_ID,
+            summary_channel_id,
             f"📭 **{date_str}** の対象チャンネルに投稿はありませんでした。",
         )
         print("投稿なし")
         return
 
     print(f"要約生成中... ({len(all_messages)} 件)")
-    summarizer = Summarizer()
     summary = summarizer.summarize(all_messages, date_str)
 
     ch_names_str = "、".join(channel_names)
     header = f"📅 **{date_str} の活動まとめ**（対象: {ch_names_str}）\n\n"
-    post_message(SUMMARY_CHANNEL_ID, header + summary)
+    post_message(summary_channel_id, header + summary)
     print("投稿完了")
+
+
+def main():
+    target_date = (datetime.now(JST) - timedelta(days=1)).date()
+    print(f"対象日: {target_date.strftime('%Y/%m/%d')}")
+
+    servers = load_servers()
+    print(f"対象サーバー: {len(servers)} 件")
+
+    summarizer = Summarizer()
+
+    for server in servers:
+        if server["name"].startswith("★"):
+            print(f"\nスキップ: {server['name']}（未設定）")
+            continue
+        process_server(server, target_date, summarizer)
 
 
 if __name__ == "__main__":
