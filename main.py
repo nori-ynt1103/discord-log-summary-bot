@@ -50,12 +50,16 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
     last_id = str(datetime_to_snowflake(end_jst))
     messages = []
 
+    print(f"  [DEBUG] start_utc={start_utc}, end_utc={end_utc}")
+    print(f"  [DEBUG] before_snowflake={last_id}")
+
     while True:
         resp = requests.get(
             f"{BASE_URL}/channels/{channel_id}/messages",
             headers=HEADERS,
             params={"limit": 100, "before": last_id},
         )
+        print(f"  [DEBUG] API status={resp.status_code}, batch_size={len(resp.json()) if resp.ok else 'error'}")
         resp.raise_for_status()
         batch = resp.json()
 
@@ -118,8 +122,12 @@ def post_message(channel_id: int, content: str):
 
 
 def main():
-    target_date = (datetime.now(JST) - timedelta(days=1)).date()
+    now_utc = datetime.now(timezone.utc)
+    now_jst = datetime.now(JST)
+    target_date = (now_jst - timedelta(days=1)).date()
     date_str = target_date.strftime("%Y/%m/%d")
+    print(f"現在時刻 UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"現在時刻 JST: {now_jst.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"対象日: {date_str}")
 
     all_messages = []
