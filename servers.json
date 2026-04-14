@@ -11,7 +11,7 @@
   },
   {
     "name": "★サーバー名を入力",
-    "source_channel_ids": [000000000000000000],
-    "summary_channel_id": 000000000000000000
+    "source_channel_ids": [0],
+    "summary_channel_id": 0
   }
 ]
