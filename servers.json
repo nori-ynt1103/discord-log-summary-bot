@@ -10,6 +10,11 @@
     "summary_channel_id": 1493724957010563216
   },
   {
+    "name": "AIらぼ",
+    "source_channel_ids": [1195016314394247242,1195912860291825714],
+    "summary_channel_id": 1494345427233931406
+  },
+  {
     "name": "★サーバー名を入力",
     "source_channel_ids": [0],
     "summary_channel_id": 0
