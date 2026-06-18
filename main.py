@@ -7,6 +7,7 @@ GitHub Actionsで毎日定時実行する。
 
 import json
 import os
+import re
 import time
 import requests
 from datetime import datetime, timedelta, timezone
@@ -93,8 +94,15 @@ def get_channel_name(channel_id: int) -> str:
     return str(channel_id)
 
 
+def suppress_link_cards(content: str) -> str:
+    """埋め込みカード（リンクプレビュー）を防ぐため、素のURLを < > で囲む。
+    既に [text](<url>) や <url> の形になっているURL（直前が < または ( ）は対象外。"""
+    return re.sub(r"(?<![<(])(https?://[^\s<>()]+)", r"<\1>", content)
+
+
 def post_message(channel_id: int, content: str):
     """2000文字制限に対応して分割投稿する。"""
+    content = suppress_link_cards(content)
     chunks = []
     while len(content) > 1900:
         split_at = content.rfind("\n\n", 0, 1900)

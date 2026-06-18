@@ -15,6 +15,11 @@
     "summary_channel_id": 1494345427233931406
   },
   {
+    "name": "クレアカ",
+    "source_channel_ids": [1397598350165147759,1413735412395933767,1397599355523043379],
+    "summary_channel_id": 1516737932680106124
+  },
+  {
     "name": "★サーバー名を入力",
     "source_channel_ids": [0],
     "summary_channel_id": 0
