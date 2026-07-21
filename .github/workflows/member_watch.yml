@@ -1,0 +1,44 @@
+name: Discord Member Watch
+
+on:
+  schedule:
+    - cron: "0 20 * * *"  # 毎日 20:00 UTC = 翌 5:00 JST
+  workflow_dispatch:       # GitHub画面から手動実行も可能
+
+# daily_summary.yml など他ワークフローと履歴コミットが衝突しないよう直列化
+concurrency:
+  group: member-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # history の commit & push 用
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run member watch
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python3 member_watch.py
+
+      - name: Commit history
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history/member_watch_history.json
+          if git diff --staged --quiet; then
+            echo "履歴に変更なし。コミットをスキップします。"
+          else
+            git commit -m "chore: update member watch history"
+            git push
+          fi
