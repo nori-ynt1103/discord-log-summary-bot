@@ -94,14 +94,52 @@ def get_channel_name(channel_id: int) -> str:
     return str(channel_id)
 
 
+def _domain_of(url: str) -> str:
+    """URLからドメイン名を取り出す（www. は除去。例: https://x.com/... → x.com）。"""
+    m = re.search(r"https?://([^/\s?#]+)", url)
+    host = m.group(1) if m else url
+    return re.sub(r"^www\.", "", host)
+
+
+def fix_malformed_links(content: str) -> str:
+    """リンク形式の乱れを矯正する（suppress_link_cards より前に適用する）。
+    a. ラベルがURLになっている [<URL>](<URL>) 形式 → ラベルをドメイン名に置換
+    b. Markdownリンクの外にある素URL → [ドメイン名](<URL>) に変換
+    c. 既に正しい [日本語ラベル](<URL>) は一切触らない
+    """
+    # a. ラベルがURL（山括弧付き含む）になっているMarkdownリンクを矯正
+    def _fix_label(m):
+        target = m.group(2).strip("<>")
+        return f"[{_domain_of(target)}](<{target}>)"
+
+    content = re.sub(
+        r"\[<?\s*(https?://[^\]\s]+?)\s*>?\]\(<?\s*(https?://[^)\s]+?)\s*>?\)",
+        _fix_label,
+        content,
+    )
+
+    # b. Markdownリンクの外にある素URL（直前が < ( [ でないもの）をリンク形式にする
+    def _fix_bare(m):
+        url = m.group(1)
+        return f"[{_domain_of(url)}](<{url}>)"
+
+    content = re.sub(
+        r"(?<![<(\[])(https?://[^\s<>()\[\]]+)",
+        _fix_bare,
+        content,
+    )
+    return content
+
+
 def suppress_link_cards(content: str) -> str:
     """埋め込みカード（リンクプレビュー）を防ぐため、素のURLを < > で囲む。
-    既に [text](<url>) や <url> の形になっているURL（直前が < または ( ）は対象外。"""
-    return re.sub(r"(?<![<(])(https?://[^\s<>()]+)", r"<\1>", content)
+    既に [text](<url>) や <url> の形になっているURL（直前が < ( [ ）は対象外。"""
+    return re.sub(r"(?<![<(\[])(https?://[^\s<>()]+)", r"<\1>", content)
 
 
 def post_message(channel_id: int, content: str):
     """2000文字制限に対応して分割投稿する。"""
+    content = fix_malformed_links(content)
     content = suppress_link_cards(content)
     chunks = []
     while len(content) > 1900:

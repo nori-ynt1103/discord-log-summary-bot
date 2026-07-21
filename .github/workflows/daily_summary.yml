@@ -4,9 +4,7 @@ on:
   schedule:
     - cron: "0 21 * * *"  # 毎日 21:00 UTC = 翌6:00 JST
   workflow_dispatch:       # GitHub画面から手動実行も可能
-  push:
-    branches:
-      - main
+  # push: main トリガーは削除（pushでの即時実行はDiscordへの重複投稿になるため。手動テストは workflow_dispatch で）
 
 jobs:
   summarize:
