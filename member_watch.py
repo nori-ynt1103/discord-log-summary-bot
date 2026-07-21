@@ -69,9 +69,30 @@ def discord_get(url, params=None):
 # ---------------------------------------------------------------------------
 # a. 参加者数 と 明鏡ロール保持者数
 # ---------------------------------------------------------------------------
+def fetch_approximate_member_count():
+    """GET /guilds/{id}?with_counts=true で概算参加者数を返す。
+    インテント不要で取得できる（暫定モード用のフォールバック）。"""
+    resp = discord_get(f"{BASE_URL}/guilds/{GUILD_ID}", params={"with_counts": "true"})
+    if not resp.ok:
+        raise WatchError(
+            f"概算参加者数の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}"
+        )
+    count = resp.json().get("approximate_member_count")
+    if count is None:
+        raise WatchError(
+            "概算参加者数（approximate_member_count）が応答に含まれていませんでした。"
+        )
+    return count
+
+
 def fetch_member_and_role_counts():
     """GET /guilds/{id}/members を after ページネーションで全件取得し、
-    (参加者総数, 明鏡ロール保持者数) を返す。"""
+    (参加者総数, 明鏡ロール保持者数) を返す。
+
+    GUILD_MEMBERS インテントが未有効で 403 が返る場合は、エラー終了せず
+    「暫定モード」にフォールバックし、(概算参加者数, None) を返す。
+    インテントが承認されて 403 が返らなくなれば、コード変更なしで自動的に
+    正確な (参加者総数, ロール保持者数) を返すようになる。"""
     all_members = []
     after = "0"
     while True:
@@ -80,10 +101,14 @@ def fetch_member_and_role_counts():
             params={"limit": 1000, "after": after},
         )
         if resp.status_code == 403:
-            raise WatchError(
-                "参加者数を取得できません: GUILD_MEMBERS インテントが未有効です。"
-                "\n→ Discord Developer Portal の Bot 設定で「Server Members Intent」をONにしてください。"
+            # インテント未有効 → 暫定モード（概算参加者数 + ロール None）にフォールバック
+            print(
+                "[暫定モード] GUILD_MEMBERS インテントが未有効（403）のため、"
+                "approximate_member_count にフォールバックします。"
+                "ロール数は集計準備中（None）で投稿します。",
+                file=sys.stderr,
             )
+            return fetch_approximate_member_count(), None
         if not resp.ok:
             raise WatchError(
                 f"参加者数の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}"
@@ -232,7 +257,8 @@ def build_recent_table(history, days=7):
             _md(e["date"]),
             f"{e['members']:,}" if e.get("members") is not None else "-",
             f"{e['buyers']:,}" if e.get("buyers") is not None else "-",
-            f"{e['role']:,}" if e.get("role") is not None else "-",
+            # ロール未集計（暫定モード）は「—」で表す
+            f"{e['role']:,}" if e.get("role") is not None else "—",
         ])
     # 列ごとの最大表示幅
     ncol = len(headers)
@@ -250,27 +276,36 @@ def build_body(history, entry, prev):
     buyers = entry["buyers"]
     role = entry["role"]
 
+    # 暫定モード判定：ロール未集計（None）のときは参加者数も概算値
+    approximate = role is None
+
     members_diff = diff_label(members, prev.get("members") if prev else None)
     buyers_diff = diff_label(buyers, prev.get("buyers") if prev else None)
-    role_diff = diff_label(role, prev.get("role") if prev else None)
-
-    if buyers and buyers > 0 and role is not None:
-        pct = round(role / buyers * 100)
-        role_pct = f"（購入者の約{pct}%）"
-    else:
-        role_pct = ""
 
     members_str = f"{members:,}" if members is not None else "-"
     buyers_str = f"{buyers:,}" if buyers is not None else "-"
-    role_str = f"{role:,}" if role is not None else "-"
+    members_note = "（概算）" if approximate else ""
 
     table = build_recent_table(history)
 
+    if approximate:
+        # 暫定モード：ロール行は「集計準備中」。前日比も%も出さない
+        role_line = "・明鏡ロール：（集計準備中）"
+    else:
+        role_diff = diff_label(role, prev.get("role") if prev else None)
+        if buyers and buyers > 0:
+            pct = round(role / buyers * 100)
+            role_pct = f"（購入者の約{pct}%）"
+        else:
+            role_pct = ""
+        role_str = f"{role:,}"
+        role_line = f"・明鏡ロール：{role_str}名{role_diff}{role_pct}"
+
     body = (
         f"【メンバー数を観測（{date_md}）】\n"
-        f"・参加者：{members_str}名{members_diff}\n"
+        f"・参加者：{members_str}名{members_note}{members_diff}\n"
         f"・明鏡購入者：{buyers_str}名{buyers_diff}\n"
-        f"・明鏡ロール：{role_str}名{role_diff}{role_pct}\n"
+        f"{role_line}\n"
         f"\n"
         f"■ 直近1週間の推移\n"
         f"```\n"
