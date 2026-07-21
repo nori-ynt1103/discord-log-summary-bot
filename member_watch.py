@@ -255,8 +255,9 @@ def build_recent_table(history, days=7):
     for e in recent:
         rows.append([
             _md(e["date"]),
-            f"{e['members']:,}" if e.get("members") is not None else "-",
-            f"{e['buyers']:,}" if e.get("buyers") is not None else "-",
+            # 未取得（履歴バックフィル分など）は「—」で表す
+            f"{e['members']:,}" if e.get("members") is not None else "—",
+            f"{e['buyers']:,}" if e.get("buyers") is not None else "—",
             # ロール未集計（暫定モード）は「—」で表す
             f"{e['role']:,}" if e.get("role") is not None else "—",
         ])
