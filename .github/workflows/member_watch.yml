@@ -42,3 +42,14 @@ jobs:
             git commit -m "chore: update member watch history"
             git push
           fi
+
+      # --- 以下はラウンジ投稿・履歴コミットの後段。ここが失敗しても上記には影響しない ---
+      - name: Install Japanese font (for role chart)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+
+      - name: Post role trend chart
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python3 role_chart.py
