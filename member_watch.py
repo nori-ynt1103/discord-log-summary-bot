@@ -1,6 +1,8 @@
 """
 明鏡コミュニティ（Discord）メンバー数観測スクリプト
 - 参加者数 / 明鏡ロール保持者数を Guild Members API から取得
+  （GUILD_MEMBERS インテント未有効で 403 のときは概算参加者数にフォールバックし、
+   ロール数はのりさんとのDMの手動入力（24時間以内の数値報告）を採用する）
 - 明鏡購入者数（累計）をアフィリエイト通知チャンネルのメッセージから取得
 - 履歴（history/member_watch_history.json）に日次で追記し、前日比つきの本文を組み立てて
   ラウンジチャンネルへ投稿する。
@@ -42,8 +44,25 @@ GUILD_ID = "1352073351882870814"          # 明鏡サーバー
 LOUNGE_CHANNEL_ID = "1352074201342672947"  # ラウンジ（投稿先）
 AFFILIATE_CHANNEL_ID = "1514734016400592936"  # アフィリエイト通知チャンネル
 MEIKYO_ROLE_ID = "1489786702032670730"     # 「明鏡」ロール
+NORI_USER_ID = "806493934183514123"        # のりさん（DM手動入力の送信元）
 
 CUMULATIVE_RE = re.compile(r"累計\s*([\d,]+)\s*部")
+# DM手動入力のロール数報告。メッセージ全体が「（明鏡）（ロール）（数）？＋数字＋（名/人）？」の
+# 短い数字系パターンに一致する場合のみ受理する（雑談中の数字を誤爆で拾わないため）。
+# 例: 「2489」「2,489」「ロール 2489」「2489名」「明鏡ロール 2,489名」
+ROLE_REPORT_RE = re.compile(
+    r"^\s*(?:明鏡)?\s*(?:ロール)?\s*(?:数)?\s*[:：]?\s*([\d,]+)\s*(?:名|人)?\s*$"
+)
+ROLE_MIN, ROLE_MAX = 1000, 99999  # 誤爆防止のため受理する数値の範囲
+
+# ロール数のソース表示ラベル（dry-run 時のログ用）
+SOURCE_LABEL = {
+    "auto": "自動集計（GUILD_MEMBERS）",
+    "dm": "DM手動入力",
+    "none": "なし（集計準備中）",
+    "test": "テスト注入",
+}
+
 HISTORY_PATH = os.path.join(os.path.dirname(__file__), "history", "member_watch_history.json")
 
 
@@ -67,6 +86,87 @@ def discord_get(url, params=None):
 
 
 # ---------------------------------------------------------------------------
+# a-2. DM経由の明鏡ロール数（手動入力）フォールバック
+# ---------------------------------------------------------------------------
+def get_dm_channel_id(user_id):
+    """POST /users/@me/channels でのりさんとのDMチャンネルを取得/作成し、そのIDを返す。
+    （既存DMがあればそれを、なければ作成して返す。メッセージ送信ではない）"""
+    while True:
+        resp = requests.post(
+            f"{BASE_URL}/users/@me/channels",
+            headers=HEADERS,
+            json={"recipient_id": str(user_id)},
+        )
+        if resp.status_code == 429:
+            try:
+                retry_after = float(resp.json().get("retry_after", 1))
+            except Exception:
+                retry_after = 1.0
+            print(f"[429] レート制限。{retry_after}s 待機して再試行...", file=sys.stderr)
+            time.sleep(retry_after + 0.5)
+            continue
+        if not resp.ok:
+            raise WatchError(
+                f"DMチャンネルの取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}"
+            )
+        return resp.json()["id"]
+
+
+def fetch_role_count_from_dm():
+    """403フォールバック時：のりさんとのDMから最新の「ロール数報告」を探す。
+    実行時刻から24時間以内の有効な報告（1,000〜99,999）があれば int を、
+    なければ None を返す。取得・解析のログは stderr に出す。"""
+    dm_id = get_dm_channel_id(NORI_USER_ID)
+    print(f"[DM] DMチャンネルID: {dm_id}", file=sys.stderr)
+
+    resp = discord_get(f"{BASE_URL}/channels/{dm_id}/messages", params={"limit": 20})
+    if not resp.ok:
+        print(
+            f"[DM] DM履歴の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}",
+            file=sys.stderr,
+        )
+        return None
+
+    messages = resp.json()  # 新しい順
+    now = datetime.now(timezone.utc)
+    for msg in messages:
+        if str(msg.get("author", {}).get("id")) != NORI_USER_ID:
+            continue
+        content = (msg.get("content") or "").strip()
+        m = ROLE_REPORT_RE.match(content)
+        if not m:
+            continue
+        raw = m.group(1).replace(",", "")
+        if not raw.isdigit():
+            continue
+        value = int(raw)
+        if not (ROLE_MIN <= value <= ROLE_MAX):
+            continue
+        # ここに来た時点で「最新の有効なロール数報告」。24時間判定を行う。
+        try:
+            ts = datetime.fromisoformat(msg["timestamp"])
+        except Exception:
+            print(f"[DM] タイムスタンプの解析に失敗: {msg.get('timestamp')!r}", file=sys.stderr)
+            return None
+        age = now - ts
+        ts_jst = ts.astimezone(JST).strftime("%m/%d %H:%M")
+        if age <= timedelta(hours=24):
+            print(
+                f"[DM] ロール数報告を採用: {value:,}名（送信 {ts_jst} JST）",
+                file=sys.stderr,
+            )
+            return value
+        print(
+            f"[DM] 最新のロール数報告 {value:,}名 は24時間より古い（送信 {ts_jst} JST）ため無視します。",
+            file=sys.stderr,
+        )
+        return None
+
+    print("[DM] 24時間以内のロール数報告は見つかりませんでした。", file=sys.stderr)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # a. 参加者数 と 明鏡ロール保持者数
 # ---------------------------------------------------------------------------
 def fetch_approximate_member_count():
@@ -87,12 +187,15 @@ def fetch_approximate_member_count():
 
 def fetch_member_and_role_counts():
     """GET /guilds/{id}/members を after ページネーションで全件取得し、
-    (参加者総数, 明鏡ロール保持者数) を返す。
+    (参加者総数, 明鏡ロール保持者数, ソース) を返す。ソースは "auto"。
 
     GUILD_MEMBERS インテントが未有効で 403 が返る場合は、エラー終了せず
-    「暫定モード」にフォールバックし、(概算参加者数, None) を返す。
+    「暫定モード」にフォールバックする。フォールバック時は概算参加者数を使い、
+    ロール数は のりさんとのDMの手動入力（24時間以内）を探す：
+      - 見つかれば (概算参加者数, ロール数, "dm")
+      - 見つからなければ (概算参加者数, None, "none")
     インテントが承認されて 403 が返らなくなれば、コード変更なしで自動的に
-    正確な (参加者総数, ロール保持者数) を返すようになる。"""
+    正確な (参加者総数, ロール保持者数, "auto") を返すようになる。"""
     all_members = []
     after = "0"
     while True:
@@ -101,14 +204,21 @@ def fetch_member_and_role_counts():
             params={"limit": 1000, "after": after},
         )
         if resp.status_code == 403:
-            # インテント未有効 → 暫定モード（概算参加者数 + ロール None）にフォールバック
+            # インテント未有効 → 暫定モード。まずDM手動入力を探す。
             print(
                 "[暫定モード] GUILD_MEMBERS インテントが未有効（403）のため、"
                 "approximate_member_count にフォールバックします。"
-                "ロール数は集計準備中（None）で投稿します。",
+                "ロール数はDM手動入力（24時間以内）を探します。",
                 file=sys.stderr,
             )
-            return fetch_approximate_member_count(), None
+            approx = fetch_approximate_member_count()
+            try:
+                role = fetch_role_count_from_dm()
+            except WatchError as e:
+                print(f"[DM] 取得中にエラー: {e}", file=sys.stderr)
+                role = None
+            source = "dm" if role is not None else "none"
+            return approx, role, source
         if not resp.ok:
             raise WatchError(
                 f"参加者数の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}"
@@ -124,7 +234,7 @@ def fetch_member_and_role_counts():
 
     members = len(all_members)
     role = sum(1 for m in all_members if MEIKYO_ROLE_ID in m.get("roles", []))
-    return members, role
+    return members, role, "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -368,8 +478,9 @@ def main():
             members = args.test_members
             buyers = args.test_buyers
             role = args.test_role
+            role_source = "test" if role is not None else "none"
         else:
-            members, role = fetch_member_and_role_counts()
+            members, role, role_source = fetch_member_and_role_counts()
             buyers = fetch_buyer_count()
             if buyers is None:
                 raise WatchError(
@@ -379,6 +490,9 @@ def main():
     except WatchError as e:
         print(f"エラー: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # ロール数のソース（自動集計／DM手動／なし）を明示
+    print(f"[ロール数ソース] {SOURCE_LABEL.get(role_source, role_source)}", file=sys.stderr)
 
     history = load_history(args.history)
     history, entry, prev = upsert_today(history, today_str, members, buyers, role)
