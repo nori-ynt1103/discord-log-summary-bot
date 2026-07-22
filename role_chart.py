@@ -1,13 +1,15 @@
 """
-明鏡ロール保有者の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿するスクリプト。
+明鏡ロール保有者・販売部数の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿する。
 
-- history/member_watch_history.json から直近7日分の role 値（null は除外）を読み、
-  折れ線グラフ PNG を生成する。
+- history/member_watch_history.json から直近7日分（role が非 null の日）を読み、
+  「明鏡ロール保有者」と「販売部数（buyers）」の推移を上下2パネルの
+  スモールマルチプルとして折れ線グラフ PNG 化する。
 - 生成後、アフィリエイト通知チャンネル（1514734016400592936）へ multipart で添付投稿する。
 - グラフ生成/投稿の失敗は明確なエラーで exit 1（黙殺しない）。
 
-配色・フォーム・軸・ダークテーマ対応は dataviz スキルの設計指針に従う（ダークサーフェス上の
-単一系列ライン。系列が1本なので凡例は置かず、タイトルが系列名を兼ねる。各点に直接ラベル）。
+配色・フォーム・軸・ダークテーマ対応は dataviz スキルの設計指針に従う。ロール(2,449〜)と
+販売部数(3,003〜)は水準が違うため二重軸は使わず、上下2パネルに分けて各パネルを独立した
+1軸で描く（各パネルは単一系列なので凡例は置かず、パネル見出しが系列名を兼ねる。各点に直接ラベル）。
 
 使い方:
   python3 role_chart.py --dry-run    # PNG 生成のみ（投稿しない）
@@ -43,7 +45,8 @@ DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "role_chart.png")
 
 # --- dataviz カラー（ダークサーフェス / palette.md 準拠）---
 SURFACE = "#1a1a19"      # ダークチャートサーフェス
-SERIES = "#3987e5"       # 系列1 blue（dark step）
+SERIES_ROLE = "#3987e5"  # 系列1 blue（dark step）… ロール保有者
+SERIES_BUYERS = "#d95926" # 系列2 orange（dark step）… 販売部数
 INK_PRIMARY = "#ffffff"  # 主要インク
 INK_SECOND = "#c3c2b7"   # 二次インク（値ラベル）
 INK_MUTED = "#898781"    # 軸/目盛ラベル
@@ -89,9 +92,11 @@ def _md(date_str):
     return f"{int(m)}/{int(d)}"
 
 
-def load_recent_role_series(path, days=7):
+def load_recent_series(path, days=7):
     """履歴から role が非 null のエントリを日付順に読み、直近 days 件を返す。
-    返り値: [(date_str, role_int), ...]。空なら ChartError。"""
+    x 軸をロールと販売部数で揃えるため、対象日は「role が非 null の日」で固定し、
+    その各日の buyers も併せて返す（buyers 欠損日は None）。
+    返り値: [(date_str, role_int, buyers_int|None), ...]。空なら ChartError。"""
     if not os.path.exists(path):
         raise ChartError(f"履歴ファイルが見つかりません: {path}")
     with open(path, encoding="utf-8") as f:
@@ -101,7 +106,11 @@ def load_recent_role_series(path, days=7):
             raise ChartError(f"履歴JSONの解析に失敗しました: {e}")
 
     points = [
-        (e["date"], int(e["role"]))
+        (
+            e["date"],
+            int(e["role"]),
+            int(e["buyers"]) if e.get("buyers") is not None else None,
+        )
         for e in history
         if e.get("role") is not None and e.get("date")
     ]
@@ -114,60 +123,50 @@ def load_recent_role_series(path, days=7):
     return points
 
 
-def render_chart(points, out_path):
-    """折れ線グラフ PNG を out_path に書き出す。"""
-    font_name = pick_font()
-    plt.rcParams["font.family"] = font_name
-    plt.rcParams["axes.unicode_minus"] = False
-
-    labels = [_md(d) for d, _ in points]
-    values = [v for _, v in points]
-    x = list(range(len(points)))
-
-    # 1280x720 @ dpi 100
-    fig, ax = plt.subplots(figsize=(12.8, 7.2), dpi=100)
-    fig.patch.set_facecolor(SURFACE)
+def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
+    """1パネル（単一系列の折れ線）を描く。values 内の None は線を切る（欠損）。"""
     ax.set_facecolor(SURFACE)
+
+    # None を含みうるので、描画・ラベル用に有効点だけ取り出す
+    xs = [xi for xi, vi in zip(x, values) if vi is not None]
+    vs = [vi for vi in values if vi is not None]
 
     # 折れ線（2px）＋マーカー（>=8px）。単一系列なので凡例なし。
     ax.plot(
-        x, values,
-        color=SERIES, linewidth=2,
+        xs, vs,
+        color=color, linewidth=2,
         marker="o", markersize=9,
-        markerfacecolor=SERIES, markeredgecolor=SURFACE, markeredgewidth=2,
+        markerfacecolor=color, markeredgecolor=SURFACE, markeredgewidth=2,
         zorder=3, clip_on=False,
     )
 
     # 各点に値ラベル（カンマ区切り・二次インク）
-    for xi, vi in zip(x, values):
+    for xi, vi in zip(xs, vs):
         ax.annotate(
             f"{vi:,}",
-            xy=(xi, vi), xytext=(0, 14), textcoords="offset points",
+            xy=(xi, vi), xytext=(0, 13), textcoords="offset points",
             ha="center", va="bottom",
-            color=INK_SECOND, fontsize=13,
+            color=INK_SECOND, fontsize=12.5,
         )
 
-    # タイトル（系列名を兼ねる）
-    ax.set_title(
-        "明鏡ロール保有者の推移",
-        color=INK_PRIMARY, fontsize=24, fontweight="bold",
-        pad=22, loc="left",
-    )
+    # パネル見出し（系列名を兼ねる）＝インク色。左端に色マーカーで系列同定を補助。
+    ax.set_title(title, color=INK_PRIMARY, fontsize=16, fontweight="bold",
+                 pad=10, loc="left")
 
-    # 軸
     ax.set_xticks(x)
-    ax.set_xticklabels(labels, color=INK_MUTED, fontsize=14)
+    if show_xlabels:
+        ax.set_xticklabels(labels, color=INK_MUTED, fontsize=13.5)
+    else:
+        ax.set_xticklabels([""] * len(x))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{int(v):,}"))
-    ax.tick_params(axis="y", colors=INK_MUTED, labelsize=13)
+    ax.tick_params(axis="y", colors=INK_MUTED, labelsize=12)
     ax.tick_params(axis="x", colors=INK_MUTED, length=0)
 
-    # Y レンジに余白（ラベルが上に出るぶん少し広めに）
-    vmin, vmax = min(values), max(values)
+    vmin, vmax = min(vs), max(vs)
     span = max(vmax - vmin, 1)
-    ax.set_ylim(vmin - span * 0.35, vmax + span * 0.45)
-    ax.set_xlim(-0.4, len(points) - 0.6)
+    ax.set_ylim(vmin - span * 0.30, vmax + span * 0.42)
+    ax.set_xlim(-0.4, len(x) - 0.6)
 
-    # グリッド（水平ヘアラインのみ）＋控えめな軸
     ax.grid(axis="y", color=GRID, linewidth=1, zorder=0)
     ax.set_axisbelow(True)
     for spine in ("top", "right", "left"):
@@ -175,7 +174,36 @@ def render_chart(points, out_path):
     ax.spines["bottom"].set_color(BASELINE)
     ax.spines["bottom"].set_linewidth(1.5)
 
-    fig.subplots_adjust(left=0.09, right=0.97, top=0.86, bottom=0.10)
+
+def render_chart(points, out_path):
+    """上下2パネル（ロール保有者・販売部数）のスモールマルチプル PNG を書き出す。"""
+    font_name = pick_font()
+    plt.rcParams["font.family"] = font_name
+    plt.rcParams["axes.unicode_minus"] = False
+
+    labels = [_md(d) for d, _, _ in points]
+    role_vals = [r for _, r, _ in points]
+    buyer_vals = [b for _, _, b in points]
+    x = list(range(len(points)))
+
+    # 1280x800 @ dpi 100（水準の違う2指標を二重軸にせず上下に分離）
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=(12.8, 8.0), dpi=100, sharex=True,
+    )
+    fig.patch.set_facecolor(SURFACE)
+
+    fig.suptitle(
+        "明鏡ロール保有者・販売部数の推移",
+        color=INK_PRIMARY, fontsize=23, fontweight="bold",
+        x=0.09, y=0.975, ha="left",
+    )
+
+    _draw_panel(ax_top, x, role_vals, labels, SERIES_ROLE,
+                "明鏡ロール保有者（名）", show_xlabels=False)
+    _draw_panel(ax_bot, x, buyer_vals, labels, SERIES_BUYERS,
+                "販売部数（累計・部）", show_xlabels=True)
+
+    fig.subplots_adjust(left=0.09, right=0.97, top=0.88, bottom=0.08, hspace=0.28)
     try:
         fig.savefig(out_path, facecolor=SURFACE)
     except Exception as e:
@@ -224,7 +252,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        points = load_recent_role_series(args.history)
+        points = load_recent_series(args.history)
         out_path = render_chart(points, args.out)
         latest_date = points[-1][0]
         print(f"[グラフ] 生成完了: {out_path}（{len(points)}点 / 最新 {latest_date}）")
@@ -233,7 +261,7 @@ def main():
             print("----- DRY RUN（投稿しません）-----")
             return
 
-        content = f"【明鏡ロール保有者の推移】（{_md(latest_date)}時点）"
+        content = f"【明鏡ロール保有者・販売部数の推移】（{_md(latest_date)}時点）"
         post_chart(AFFILIATE_CHANNEL_ID, out_path, content)
         print(f"投稿完了: アフィリエイト通知チャンネルへ画像を投稿（{content}）")
     except ChartError as e:
