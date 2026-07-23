@@ -2,7 +2,7 @@
 明鏡コミュニティ（Discord）メンバー数観測スクリプト
 - 参加者数 / 明鏡ロール保持者数を Guild Members API から取得
   （GUILD_MEMBERS インテント未有効で 403 のときは概算参加者数にフォールバックし、
-   ロール数はのりさんとのDMの手動入力（24時間以内の数値報告）を採用する）
+   ロール数はのりさんとのDMの手動入力（36時間以内の数値報告）を採用する）
 - 明鏡購入者数（累計）をアフィリエイト通知チャンネルのメッセージから取得
 - 履歴（history/member_watch_history.json）に日次で追記し、前日比つきの本文を組み立てて
   ラウンジチャンネルへ投稿する。
@@ -116,7 +116,7 @@ def get_dm_channel_id(user_id):
 
 def fetch_role_count_from_dm():
     """403フォールバック時：のりさんとのDMから最新の「ロール数報告」を探す。
-    実行時刻から24時間以内の有効な報告（1,000〜99,999）があれば int を、
+    実行時刻から36時間以内の有効な報告（1,000〜99,999）があれば int を、
     なければ None を返す。取得・解析のログは stderr に出す。"""
     dm_id = get_dm_channel_id(NORI_USER_ID)
     print(f"[DM] DMチャンネルID: {dm_id}", file=sys.stderr)
@@ -144,7 +144,7 @@ def fetch_role_count_from_dm():
         value = int(raw)
         if not (ROLE_MIN <= value <= ROLE_MAX):
             continue
-        # ここに来た時点で「最新の有効なロール数報告」。24時間判定を行う。
+        # ここに来た時点で「最新の有効なロール数報告」。36時間判定を行う。
         try:
             ts = datetime.fromisoformat(msg["timestamp"])
         except Exception:
@@ -152,19 +152,19 @@ def fetch_role_count_from_dm():
             return None
         age = now - ts
         ts_jst = ts.astimezone(JST).strftime("%m/%d %H:%M")
-        if age <= timedelta(hours=24):
+        if age <= timedelta(hours=36):
             print(
                 f"[DM] ロール数報告を採用: {value:,}名（送信 {ts_jst} JST）",
                 file=sys.stderr,
             )
             return value
         print(
-            f"[DM] 最新のロール数報告 {value:,}名 は24時間より古い（送信 {ts_jst} JST）ため無視します。",
+            f"[DM] 最新のロール数報告 {value:,}名 は36時間より古い（送信 {ts_jst} JST）ため無視します。",
             file=sys.stderr,
         )
         return None
 
-    print("[DM] 24時間以内のロール数報告は見つかりませんでした。", file=sys.stderr)
+    print("[DM] 36時間以内のロール数報告は見つかりませんでした。", file=sys.stderr)
     return None
 
 
@@ -193,7 +193,7 @@ def fetch_member_and_role_counts():
 
     GUILD_MEMBERS インテントが未有効で 403 が返る場合は、エラー終了せず
     「暫定モード」にフォールバックする。フォールバック時は概算参加者数を使い、
-    ロール数は のりさんとのDMの手動入力（24時間以内）を探す：
+    ロール数は のりさんとのDMの手動入力（36時間以内）を探す：
       - 見つかれば (概算参加者数, ロール数, "dm")
       - 見つからなければ (概算参加者数, None, "none")
     インテントが承認されて 403 が返らなくなれば、コード変更なしで自動的に
@@ -210,7 +210,7 @@ def fetch_member_and_role_counts():
             print(
                 "[暫定モード] GUILD_MEMBERS インテントが未有効（403）のため、"
                 "approximate_member_count にフォールバックします。"
-                "ロール数はDM手動入力（24時間以内）を探します。",
+                "ロール数はDM手動入力（36時間以内）を探します。",
                 file=sys.stderr,
             )
             approx = fetch_approximate_member_count()
