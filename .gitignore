@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 role_chart.png
+
+# 申請用スクショ（コミュニティメンバー名が写るためコミットしない）
+intent_evidence/
