@@ -38,8 +38,14 @@ def datetime_to_snowflake(dt: datetime) -> int:
     return (ms - 1420070400000) << 22
 
 
-def fetch_messages(channel_id: int, target_date) -> list[dict]:
-    """指定日（JST）のメッセージを全件取得する。"""
+def fetch_messages(channel_id: int, target_date, exclude_user_ids=None) -> list[dict]:
+    """指定日（JST）のメッセージを全件取得する。
+
+    exclude_user_ids に入れたユーザーのメッセージは、要約処理に渡す前の
+    この時点で捨てる（オプトアウト対応）。除外された本文はLLMへ送られず、
+    メモリ上にも残らない。空／未指定なら従来どおり全件を対象にする。
+    """
+    excluded = {str(uid) for uid in (exclude_user_ids or [])}
     start_jst = datetime(
         target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=JST
     )
@@ -49,6 +55,7 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
 
     last_id = str(datetime_to_snowflake(end_jst))
     messages = []
+    skipped = 0
 
     while True:
         resp = requests.get(
@@ -69,6 +76,9 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
                 reached_start = True
                 break
             if ts < end_utc:
+                if str(msg["author"]["id"]) in excluded:
+                    skipped += 1
+                    continue
                 messages.append({
                     "timestamp": ts.astimezone(JST).strftime("%H:%M"),
                     "author": msg["author"].get("global_name") or msg["author"]["username"],
@@ -81,6 +91,9 @@ def fetch_messages(channel_id: int, target_date) -> list[dict]:
 
         last_id = batch[-1]["id"]
         time.sleep(0.5)
+
+    if skipped:
+        print(f"  （オプトアウト設定により {skipped} 件を除外）")
 
     messages.reverse()
     return messages
@@ -166,6 +179,8 @@ def process_server(server: dict, target_date, summarizer: Summarizer):
     name = server["name"]
     source_ids = server["source_channel_ids"]
     summary_channel_id = server["summary_channel_id"]
+    # 要約されたくないと申し出た人のDiscordユーザーID（servers.json で設定・任意キー）
+    exclude_user_ids = server.get("exclude_user_ids", [])
     date_str = target_date.strftime("%Y/%m/%d")
 
     print(f"\n=== {name} ===")
@@ -178,7 +193,7 @@ def process_server(server: dict, target_date, summarizer: Summarizer):
         channel_names.append(ch_name)
         print(f"#{ch_name} からメッセージ取得中...")
 
-        msgs = fetch_messages(ch_id, target_date)
+        msgs = fetch_messages(ch_id, target_date, exclude_user_ids)
         for m in msgs:
             m["channel_name"] = ch_name
         all_messages.extend(msgs)
