@@ -26,14 +26,12 @@ from member_watch import (
     HISTORY_PATH,
     JST,
     NORI_USER_ID,
-    ROLE_MAX,
-    ROLE_MIN,
-    ROLE_REPORT_RE,
     DISCORD_BOT_TOKEN,
     WatchError,
     discord_get,
     get_dm_channel_id,
     load_history,
+    parse_role_report,
     post_message,
 )
 
@@ -51,14 +49,8 @@ def find_report_today(dm_id):
     for msg in resp.json():  # 新しい順
         if str(msg.get("author", {}).get("id")) != NORI_USER_ID:
             continue
-        m = ROLE_REPORT_RE.match((msg.get("content") or "").strip())
-        if not m:
-            continue
-        raw = m.group(1).replace(",", "")
-        if not raw.isdigit():
-            continue
-        value = int(raw)
-        if not (ROLE_MIN <= value <= ROLE_MAX):
+        value = parse_role_report(msg.get("content"))
+        if value is None:
             continue
         # ここが「最新の有効な報告」。当日中かどうかだけを見る。
         try:

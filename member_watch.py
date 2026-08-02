@@ -3,6 +3,8 @@
 - 参加者数 / 明鏡ロール保持者数を Guild Members API から取得
   （GUILD_MEMBERS インテント未有効で 403 のときは概算参加者数にフォールバックし、
    ロール数はのりさんとのDMの手動入力（36時間以内の数値報告）を採用する）
+- 手動入力をどう扱ったかは、毎回のりさんへDMで受領報告（レシート）を返す。
+  解釈できなかった発言があればそれも知らせる（黙って無視しない・2026-08-03追加）
 - 明鏡購入者数（累計）をアフィリエイト通知チャンネルのメッセージから取得
 - 履歴（history/member_watch_history.json）に日次で追記し、前日比つきの本文を組み立てて
   ラウンジチャンネルへ投稿する。
@@ -47,15 +49,38 @@ MEIKYO_ROLE_ID = "1489786702032670730"     # 「明鏡」ロール
 NORI_USER_ID = "806493934183514123"        # のりさん（DM手動入力の送信元）
 
 CUMULATIVE_RE = re.compile(r"累計\s*([\d,]+)\s*部")
-# DM手動入力のロール数報告。メッセージ全体が「（ラベル語）*＋数字＋（名/人）？（です）？」の
-# 短い数字系パターンに一致する場合のみ受理する（雑談中の数字を誤爆で拾わないため）。
-# ラベル語＝明鏡／ロール／保有者／保持者／保有／保持／数／者 の任意個の連なり。
-# 例: 「2489」「2,489」「ロール 2489」「2489名」「明鏡ロール 2,489名」
-#     「ロール保有者2515」「明鏡ロール保持者2515名」「ロール保有者 2,515名です」
-ROLE_REPORT_RE = re.compile(
-    r"^\s*(?:(?:明鏡|ロール|保有者|保持者|保有|保持|数|者)\s*)*[:：]?\s*([\d,]+)\s*(?:名|人)?\s*(?:です)?\s*[。\.]?\s*$"
+
+# --- DM手動入力のロール数報告の解釈 ---
+# 受理は次の2通り（2026-08-03に部分一致へ緩和）。
+#  1) ラベル語の直後に数字が来る箇所が、メッセージ中のどこかにある（前後に自由文があってよい）
+#     例: 「8/1 明鏡ロール保有者 2624」「明鏡ロール保有者 2649\n8月1日時点で…」
+#  2) メッセージ全体が数字だけ（従来互換）
+#     例: 「2489」「2,489名」「2,515名です」
+# ラベルと数字の間は「空白・数/者・コロン・イコール」しか許さない（雑談中の数字の誤爆防止）。
+ROLE_LABEL = r"(?:明鏡|ロール|保有者|保持者|保有|保持)"
+ROLE_LABELED_RE = re.compile(
+    rf"{ROLE_LABEL}(?:\s*{ROLE_LABEL})*\s*(?:数|者)?\s*[:：＝=]?\s*([\d,]+)"
 )
+ROLE_BARE_RE = re.compile(r"^\s*([\d,]+)\s*(?:名|人)?\s*(?:です)?\s*[。\.]?\s*$")
 ROLE_MIN, ROLE_MAX = 1000, 99999  # 誤爆防止のため受理する数値の範囲
+
+
+def parse_role_report(content):
+    """DM本文からロール数を1つ取り出す。解釈できなければ None。
+    ラベル付きの一致を優先し、メッセージ中で最初に現れた有効値を採用する。"""
+    text = (content or "").strip()
+    if not text:
+        return None
+    for m in ROLE_LABELED_RE.finditer(text):
+        raw = m.group(1).replace(",", "")
+        if raw.isdigit() and ROLE_MIN <= int(raw) <= ROLE_MAX:
+            return int(raw)
+    m = ROLE_BARE_RE.match(text)
+    if m:
+        raw = m.group(1).replace(",", "")
+        if raw.isdigit() and ROLE_MIN <= int(raw) <= ROLE_MAX:
+            return int(raw)
+    return None
 
 # ロール数のソース表示ラベル（dry-run 時のログ用）
 SOURCE_LABEL = {
@@ -116,10 +141,15 @@ def get_dm_channel_id(user_id):
 
 def fetch_role_count_from_dm():
     """403フォールバック時：のりさんとのDMから最新の「ロール数報告」を探す。
-    実行時刻から36時間以内の有効な報告（1,000〜99,999）があれば int を、
-    なければ None を返す。取得・解析のログは stderr に出す。"""
+    戻り値は (値 or None, info)。info は受領DM（レシート）用の付随情報：
+      - dm_id       : DMチャンネルID（レシート送信先）
+      - sent_at     : 採用した報告の送信時刻（JST表示用文字列）
+      - stale       : 36時間より古くて不採用にしたときの値
+      - unparsed    : 採用した報告より新しい、解釈できなかったのりさんの発言（新しい順）
+    実行時刻から36時間以内の有効な報告（1,000〜99,999）があれば値を返す。"""
     dm_id = get_dm_channel_id(NORI_USER_ID)
     print(f"[DM] DMチャンネルID: {dm_id}", file=sys.stderr)
+    info = {"dm_id": dm_id, "sent_at": None, "stale": None, "unparsed": []}
 
     resp = discord_get(f"{BASE_URL}/channels/{dm_id}/messages", params={"limit": 20})
     if not resp.ok:
@@ -127,7 +157,7 @@ def fetch_role_count_from_dm():
             f"[DM] DM履歴の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}",
             file=sys.stderr,
         )
-        return None
+        return None, info
 
     messages = resp.json()  # 新しい順
     now = datetime.now(timezone.utc)
@@ -135,37 +165,36 @@ def fetch_role_count_from_dm():
         if str(msg.get("author", {}).get("id")) != NORI_USER_ID:
             continue
         content = (msg.get("content") or "").strip()
-        m = ROLE_REPORT_RE.match(content)
-        if not m:
-            continue
-        raw = m.group(1).replace(",", "")
-        if not raw.isdigit():
-            continue
-        value = int(raw)
-        if not (ROLE_MIN <= value <= ROLE_MAX):
+        value = parse_role_report(content)
+        if value is None:
+            # 採用報告より新しい「解釈できなかった発言」を控えておく（レシートで知らせる）
+            if content:
+                info["unparsed"].append(content)
             continue
         # ここに来た時点で「最新の有効なロール数報告」。36時間判定を行う。
         try:
             ts = datetime.fromisoformat(msg["timestamp"])
         except Exception:
             print(f"[DM] タイムスタンプの解析に失敗: {msg.get('timestamp')!r}", file=sys.stderr)
-            return None
+            return None, info
         age = now - ts
         ts_jst = ts.astimezone(JST).strftime("%m/%d %H:%M")
+        info["sent_at"] = ts_jst
         if age <= timedelta(hours=36):
             print(
                 f"[DM] ロール数報告を採用: {value:,}名（送信 {ts_jst} JST）",
                 file=sys.stderr,
             )
-            return value
+            return value, info
         print(
             f"[DM] 最新のロール数報告 {value:,}名 は36時間より古い（送信 {ts_jst} JST）ため無視します。",
             file=sys.stderr,
         )
-        return None
+        info["stale"] = value
+        return None, info
 
     print("[DM] 36時間以内のロール数報告は見つかりませんでした。", file=sys.stderr)
-    return None
+    return None, info
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +243,14 @@ def fetch_member_and_role_counts():
                 file=sys.stderr,
             )
             approx = fetch_approximate_member_count()
+            dm_info = None
             try:
-                role = fetch_role_count_from_dm()
+                role, dm_info = fetch_role_count_from_dm()
             except WatchError as e:
                 print(f"[DM] 取得中にエラー: {e}", file=sys.stderr)
                 role = None
             source = "dm" if role is not None else "none"
-            return approx, role, source
+            return approx, role, source, dm_info
         if not resp.ok:
             raise WatchError(
                 f"参加者数の取得に失敗（HTTP {resp.status_code}）: {resp.text[:300]}"
@@ -236,7 +266,7 @@ def fetch_member_and_role_counts():
 
     members = len(all_members)
     role = sum(1 for m in all_members if MEIKYO_ROLE_ID in m.get("roles", []))
-    return members, role, "auto"
+    return members, role, "auto", None
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +484,69 @@ def post_message(channel_id, content):
 
 
 # ---------------------------------------------------------------------------
+# f. 受領DM（レシート）
+# ---------------------------------------------------------------------------
+def build_receipt(entry, prev, role_source, dm_info):
+    """朝の観測でロール数をどう扱ったかを、のりさんへ知らせる本文を組み立てる。
+    「送ったのに黙って無視されていた」を無くすのが目的（2026-08-03追加）。"""
+    date_str = _md(entry["date"])
+    role = entry.get("role")
+    lines = [f"【メンバー数観測（{date_str}）の受領報告】", ""]
+
+    if role_source == "auto":
+        lines.append(f"ロール数は自動集計で {role:,}名 でした（DM報告は不要です）。")
+    elif role_source == "dm":
+        sent_at = (dm_info or {}).get("sent_at")
+        sent = f"（{sent_at} JST の報告）" if sent_at else ""
+        lines.append(f"✅ ロール数 {role:,}名 を採用しました{sent}。")
+        prev_role = (prev or {}).get("role")
+        if prev_role is not None and prev_role == role:
+            lines.append(
+                f"⚠️ 前日と同じ値のため前日比±0で投稿しています。"
+                f"新しい数字がある場合はこのDMに送り直してください。"
+            )
+    else:
+        stale = (dm_info or {}).get("stale")
+        if stale is not None:
+            lines.append(
+                f"⚠️ 直近の報告 {stale:,}名 は36時間より古いため使いませんでした。"
+                "本日は「集計準備中」で投稿しています。"
+            )
+        else:
+            lines.append(
+                "⚠️ 有効なロール数報告が見つかりませんでした。"
+                "本日は「集計準備中」で投稿しています。"
+            )
+
+    unparsed = (dm_info or {}).get("unparsed") or []
+    if unparsed:
+        lines.append("")
+        lines.append("❗ 次のメッセージは数字として解釈できず、使われていません：")
+        for raw in unparsed[:3]:
+            snippet = raw.replace("\n", " / ")
+            if len(snippet) > 80:
+                snippet = snippet[:80] + "…"
+            lines.append(f"　・「{snippet}」")
+        lines.append("")
+        lines.append("受け付けられる書き方：「明鏡ロール保有者 2649」（数字は1つだけ）")
+        lines.append("※ 過去の日付の訂正はこのDMではできません（手動対応が必要です）")
+
+    return "\n".join(lines)
+
+
+def send_receipt(entry, prev, role_source, dm_info):
+    """受領DMを送る。失敗しても本編（ラウンジ投稿）には影響させない。"""
+    dm_id = (dm_info or {}).get("dm_id")
+    try:
+        if not dm_id:
+            dm_id = get_dm_channel_id(NORI_USER_ID)
+        post_message(dm_id, build_receipt(entry, prev, role_source, dm_info))
+        print("[DM] 受領報告を送信しました。", file=sys.stderr)
+    except Exception as e:  # レシートは補助機能。落としてまで送るものではない
+        print(f"[DM] 受領報告の送信に失敗（本編には影響なし）: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main():
@@ -467,6 +560,7 @@ def main():
     args = parser.parse_args()
 
     test_mode = args.test_members is not None or args.test_buyers is not None or args.test_role is not None
+    dm_info = None
 
     if not test_mode and not DISCORD_BOT_TOKEN:
         print("エラー: DISCORD_BOT_TOKEN が未設定です（.env / GitHub Secrets を確認）。", file=sys.stderr)
@@ -482,7 +576,7 @@ def main():
             role = args.test_role
             role_source = "test" if role is not None else "none"
         else:
-            members, role, role_source = fetch_member_and_role_counts()
+            members, role, role_source, dm_info = fetch_member_and_role_counts()
             buyers = fetch_buyer_count()
             if buyers is None:
                 raise WatchError(
@@ -503,6 +597,8 @@ def main():
     if args.dry_run:
         print("----- DRY RUN（投稿しません）-----")
         print(body)
+        print("----- 受領DM（送信しません）-----")
+        print(build_receipt(entry, prev, role_source, dm_info))
         print("----- END DRY RUN -----")
         # dry-run では履歴を書き戻さない（本番のみ永続化する）
         return
@@ -510,6 +606,8 @@ def main():
     save_history(args.history, history)
     post_message(LOUNGE_CHANNEL_ID, body)
     print(f"投稿完了: 参加者{members} / 購入者{buyers} / ロール{role}")
+    if not test_mode:
+        send_receipt(entry, prev, role_source, dm_info)
 
 
 if __name__ == "__main__":
