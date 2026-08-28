@@ -17,6 +17,9 @@ from summarizer import Summarizer
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+# DRY_RUN=1 のときはDiscordへの投稿だけをスキップし、要約本文を標準出力に出す。
+# 取得・要約までは本番と同じ経路を通るので、本番チャンネルを汚さずに疎通確認できる（2026-08-28追加）
+DRY_RUN = os.getenv("DRY_RUN") == "1"
 JST = timezone(timedelta(hours=9))
 BASE_URL = "https://discord.com/api/v10"
 HEADERS = {
@@ -154,6 +157,13 @@ def post_message(channel_id: int, content: str):
     """2000文字制限に対応して分割投稿する。"""
     content = fix_malformed_links(content)
     content = suppress_link_cards(content)
+
+    if DRY_RUN:
+        print(f"--- DRY_RUN: 投稿スキップ (channel_id={channel_id}) ---")
+        print(content)
+        print("--- DRY_RUN: ここまで（Discordへは送信していません） ---")
+        return
+
     chunks = []
     while len(content) > 1900:
         split_at = content.rfind("\n\n", 0, 1900)

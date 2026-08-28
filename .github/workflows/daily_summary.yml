@@ -1,8 +1,11 @@
 name: Discord Daily Summary
 
 on:
-  schedule:
-    - cron: "0 21 * * *"  # 毎日 21:00 UTC = 翌6:00 JST
+  # 2026-08-28: GitHub側の起動遅延が悪化したため（+8時間の日もあり）、定時実行はMacのcrontab
+  # （毎朝6:00 JST / scripts/daily_summary_local.sh）へ移設。手動は下の workflow_dispatch を使う。
+  # ここを復活させるとMac側と二重投稿になるので、戻すときは必ずcrontab側を止めること。
+  # schedule:
+  #   - cron: "0 21 * * *"  # 毎日 21:00 UTC = 翌6:00 JST
   workflow_dispatch:       # GitHub画面から手動実行も可能
   # push: main トリガーは削除（pushでの即時実行はDiscordへの重複投稿になるため。手動テストは workflow_dispatch で）
 
