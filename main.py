@@ -8,7 +8,9 @@ GitHub Actionsで毎日定時実行する。
 import json
 import os
 import re
+import sys
 import time
+import traceback
 import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -26,6 +28,35 @@ HEADERS = {
     "Authorization": f"Bot {DISCORD_BOT_TOKEN}",
     "Content-Type": "application/json",
 }
+
+# メッセージ取得の接続エラー・タイムアウト時のリトライ設定（2026-09-17追加）
+# 2026-09-16分の日報が RemoteDisconnected で落ちたため。対象は接続系の例外のみで、
+# HTTPステータス由来のエラー（4xx/5xx）は従来どおり raise_for_status に任せる。
+FETCH_MAX_ATTEMPTS = 3
+FETCH_BACKOFF_SEC = 2
+FETCH_TIMEOUT_SEC = 30
+
+# ONLY_SERVERS="TOLPass,AIらぼ" のように指定すると、そのサーバーだけを処理する。
+# 未指定なら従来どおり servers.json の全サーバーが対象（2026-09-17追加・復旧用）
+ONLY_SERVERS = [s.strip() for s in os.getenv("ONLY_SERVERS", "").split(",") if s.strip()]
+
+
+def get_with_retry(url: str, **kwargs) -> requests.Response:
+    """接続エラー／タイムアウトのときだけ指数バックオフでリトライするGET。"""
+    kwargs.setdefault("timeout", FETCH_TIMEOUT_SEC)
+    for attempt in range(1, FETCH_MAX_ATTEMPTS + 1):
+        try:
+            return requests.get(url, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            if attempt == FETCH_MAX_ATTEMPTS:
+                raise
+            wait = FETCH_BACKOFF_SEC * (2 ** (attempt - 1))
+            print(
+                f"  ⚠ 接続エラー ({attempt}/{FETCH_MAX_ATTEMPTS}): {e} "
+                f"→ {wait}秒後にリトライ",
+                flush=True,
+            )
+            time.sleep(wait)
 
 
 def load_servers() -> list[dict]:
@@ -61,7 +92,7 @@ def fetch_messages(channel_id: int, target_date, exclude_user_ids=None) -> list[
     skipped = 0
 
     while True:
-        resp = requests.get(
+        resp = get_with_retry(
             f"{BASE_URL}/channels/{channel_id}/messages",
             headers=HEADERS,
             params={"limit": 100, "before": last_id},
@@ -231,15 +262,37 @@ def main():
     print(f"対象日: {target_date.strftime('%Y/%m/%d')}")
 
     servers = load_servers()
+    if ONLY_SERVERS:
+        servers = [s for s in servers if s["name"] in ONLY_SERVERS]
+        print(f"ONLY_SERVERS 指定: {', '.join(ONLY_SERVERS)}")
+        missing = [n for n in ONLY_SERVERS if n not in {s["name"] for s in servers}]
+        if missing:
+            print(f"⚠ servers.json に見つからない名前: {', '.join(missing)}")
     print(f"対象サーバー: {len(servers)} 件")
 
     summarizer = Summarizer()
+
+    # 1サーバーが落ちても残りを処理する（2026-09-17追加）。
+    # 失敗したサーバー名を集めて、1件でもあれば exit 1 にするのでcron側の成否判定は従来どおり。
+    failed = []
 
     for server in servers:
         if server["name"].startswith("★"):
             print(f"\nスキップ: {server['name']}（未設定）")
             continue
-        process_server(server, target_date, summarizer)
+        try:
+            process_server(server, target_date, summarizer)
+        except Exception as e:
+            failed.append(server["name"])
+            print(f"\n❌ {server['name']} の処理に失敗: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            print("→ このサーバーはスキップして次へ進みます", flush=True)
+
+    if failed:
+        print(f"\n失敗したサーバー: {', '.join(failed)}（{len(failed)}件）")
+        sys.exit(1)
+
+    print("\n全サーバー正常終了")
 
 
 if __name__ == "__main__":
