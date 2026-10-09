@@ -15,6 +15,7 @@
 
 import os
 import re
+from decimal import Decimal, ROUND_HALF_UP
 import time
 import requests
 from datetime import datetime, timedelta, timezone
@@ -98,7 +99,8 @@ class OpenSea:
                 tid = str(x["asset"]["identifier"])
                 eth = int(price["value"]) / 10 ** price["decimals"]
                 if tid not in best or eth < best[tid]["eth"]:
-                    best[tid] = {"token_id": tid, "eth": eth, "maker": p["offerer"].lower()}
+                    best[tid] = {"token_id": tid, "eth": eth, "maker": p["offerer"].lower(),
+                                 "start": int(p["startTime"])}
             nxt = data.get("next")
             if not nxt:
                 break
@@ -246,8 +248,9 @@ def parse_previous(content: str, iso_ts: str) -> dict:
 # ---------------------------------------------------------------- 本文の組み立て
 
 def fmt_eth(x: float) -> str:
-    """これまでの朝刊どおり小数4桁で丸め、末尾の0を落とす（1 → 1.0）。"""
-    s = f"{round(x, 4):.4f}".rstrip("0")
+    """これまでの朝刊どおり小数4桁で四捨五入し、末尾の0を落とす（1 → 1.0）。"""
+    # OpenSeaの表示と同じ四捨五入（round() は 0.01935 → 0.0193 になるので使わない）
+    s = f"{Decimal(str(x)).quantize(Decimal('0.0001'), rounding=ROUND_HALF_UP):.4f}".rstrip("0")
     return s + "0" if s.endswith(".") else s
 
 
@@ -279,10 +282,8 @@ def build(slug: str, channel_id: int, bot_token: str, now: datetime | None = Non
     for tid, item in listings.items():
         prof = os_api.owner_profile(tid, item["maker"])
         rows.append({**item, **prof, "shown": fmt_eth(item["eth"])})
-    prev_order = list(prev["tokens"].keys())
-    rows.sort(key=lambda r: (float(r["shown"]),
-                             prev_order.index(r["token_id"]) if r["token_id"] in prev_order else 10**6,
-                             int(r["token_id"])))
+    # OpenSeaの「Price low to high」と同じく実際の価格の安い順。同額は新しい出品が先
+    rows.sort(key=lambda r: (r["eth"], -r["start"]))
 
     issue = prev["issue"] + 1
     list_count = len(rows)
