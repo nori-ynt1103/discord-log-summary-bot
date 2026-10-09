@@ -15,6 +15,7 @@ import requests
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from summarizer import Summarizer
+import tolpass_asakan
 
 load_dotenv()
 
@@ -280,6 +281,23 @@ def main():
         if server["name"].startswith("★"):
             print(f"\nスキップ: {server['name']}（未設定）")
             continue
+        # 朝刊（servers.json に "asakan" があるサーバーだけ）。活動まとめより先に投稿する。
+        # 朝刊が落ちても活動まとめは出す（2026-10-10追加）
+        if server.get("asakan"):
+            try:
+                print(f"\n=== {server['name']}：分析神の朝刊 ===")
+                text = tolpass_asakan.build(
+                    server["asakan"].get("opensea_slug", "tolpass"),
+                    server["summary_channel_id"],
+                    DISCORD_BOT_TOKEN,
+                )
+                post_message(server["summary_channel_id"], text)
+                print("朝刊 投稿完了")
+            except Exception as e:
+                failed.append(f"{server['name']}（朝刊）")
+                print(f"\n❌ {server['name']} の朝刊に失敗: {type(e).__name__}: {e}", flush=True)
+                traceback.print_exc()
+                print("→ 朝刊はスキップして活動まとめへ進みます", flush=True)
         try:
             process_server(server, target_date, summarizer)
         except Exception as e:
