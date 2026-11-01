@@ -652,5 +652,12 @@
     "members": 11702,
     "buyers": 3410,
     "role": 2899
+  },
+  {
+    "date": "2026-11-02",
+    "members": 11713,
+    "buyers": 3425,
+    "role": 2912,
+    "rondo_buyers": 52
   }
 ]
