@@ -1,14 +1,16 @@
 """
-明鏡ロール保有者・販売部数の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿する。
+明鏡ロール保有者・販売部数・Rondo読者数の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿する。
 
 - history/member_watch_history.json から直近7日分（role が非 null の日）を読み、
-  「明鏡ロール保有者」と「販売部数（buyers）」の推移を上下2パネルの
-  スモールマルチプルとして折れ線グラフ PNG 化する。
+  「明鏡ロール保有者」「販売部数（buyers）」「Rondo読者数（rondo＝配信対象）」の推移を
+  上中下3パネルのスモールマルチプルとして折れ線グラフ PNG 化する。
+- rondo は rondo_watch.py が書き込む。値が1つも無いとき（導入直後・取得失敗が続いたとき）は
+  Rondo パネルに「データ収集中」と表示するだけで、他の2パネルの生成・投稿は止めない。
 - 生成後、アフィリエイト通知チャンネル（1514734016400592936）へ multipart で添付投稿する。
 - グラフ生成/投稿の失敗は明確なエラーで exit 1（黙殺しない）。
 
-配色・フォーム・軸・ダークテーマ対応は dataviz スキルの設計指針に従う。ロール(2,449〜)と
-販売部数(3,003〜)は水準が違うため二重軸は使わず、上下2パネルに分けて各パネルを独立した
+配色・フォーム・軸・ダークテーマ対応は dataviz スキルの設計指針に従う。ロール(2,449〜)・
+販売部数(3,003〜)・Rondo読者数は水準が違うため二重軸は使わず、3パネルに分けて各パネルを独立した
 1軸で描く（各パネルは単一系列なので凡例は置かず、パネル見出しが系列名を兼ねる。各点に直接ラベル）。
 
 使い方:
@@ -31,7 +33,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 
 load_dotenv()
 
@@ -47,6 +49,7 @@ DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "role_chart.png")
 SURFACE = "#1a1a19"      # ダークチャートサーフェス
 SERIES_ROLE = "#3987e5"  # 系列1 blue（dark step）… ロール保有者
 SERIES_BUYERS = "#d95926" # 系列2 orange（dark step）… 販売部数
+SERIES_RONDO = "#2e9e6e"  # 系列3 green … Rondo読者数（配信対象）
 INK_PRIMARY = "#ffffff"  # 主要インク
 INK_SECOND = "#c3c2b7"   # 二次インク（値ラベル）
 INK_MUTED = "#898781"    # 軸/目盛ラベル
@@ -94,9 +97,9 @@ def _md(date_str):
 
 def load_recent_series(path, days=7):
     """履歴から role が非 null のエントリを日付順に読み、直近 days 件を返す。
-    x 軸をロールと販売部数で揃えるため、対象日は「role が非 null の日」で固定し、
-    その各日の buyers も併せて返す（buyers 欠損日は None）。
-    返り値: [(date_str, role_int, buyers_int|None), ...]。空なら ChartError。"""
+    x 軸を全パネルで揃えるため、対象日は「role が非 null の日」で固定し、
+    その各日の buyers・rondo も併せて返す（欠損日は None）。
+    返り値: [(date_str, role_int, buyers_int|None, rondo_int|None), ...]。空なら ChartError。"""
     if not os.path.exists(path):
         raise ChartError(f"履歴ファイルが見つかりません: {path}")
     with open(path, encoding="utf-8") as f:
@@ -110,6 +113,7 @@ def load_recent_series(path, days=7):
             e["date"],
             int(e["role"]),
             int(e["buyers"]) if e.get("buyers") is not None else None,
+            int(e["rondo"]) if e.get("rondo") is not None else None,
         )
         for e in history
         if e.get("role") is not None and e.get("date")
@@ -124,16 +128,29 @@ def load_recent_series(path, days=7):
 
 
 def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
-    """1パネル（単一系列の折れ線）を描く。values 内の None は線を切る（欠損）。"""
+    """1パネル（単一系列の折れ線）を描く。values 内の None は線を切る（欠損）。
+    値が全て None のときは軸だけ描き、パネル中央に「データ収集中」と出す（落とさない）。"""
     ax.set_facecolor(SURFACE)
+
+    if all(v is None for v in values):
+        _style_axes(ax, x, labels, title, show_xlabels)
+        ax.set_yticks([])
+        ax.text(
+            0.5, 0.5, "データ収集中（翌日から表示）",
+            transform=ax.transAxes, ha="center", va="center",
+            color=INK_SECOND, fontsize=14,
+        )
+        return
 
     # None を含みうるので、描画・ラベル用に有効点だけ取り出す
     xs = [xi for xi, vi in zip(x, values) if vi is not None]
     vs = [vi for vi in values if vi is not None]
 
     # 折れ線（2px）＋マーカー（>=8px）。単一系列なので凡例なし。
+    # None は NaN にして渡す → 欠損日の前後で線が切れる（欠損をまたいでつながない）。
+    ys = [float("nan") if vi is None else vi for vi in values]
     ax.plot(
-        xs, vs,
+        x, ys,
         color=color, linewidth=2,
         marker="o", markersize=9,
         markerfacecolor=color, markeredgecolor=SURFACE, markeredgewidth=2,
@@ -149,6 +166,15 @@ def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
             color=INK_SECOND, fontsize=12.5,
         )
 
+    _style_axes(ax, x, labels, title, show_xlabels)
+
+    vmin, vmax = min(vs), max(vs)
+    span = max(vmax - vmin, 1)
+    ax.set_ylim(vmin - span * 0.30, vmax + span * 0.42)
+
+
+def _style_axes(ax, x, labels, title, show_xlabels):
+    """パネル共通の見出し・目盛・グリッド・枠線。"""
     # パネル見出し（系列名を兼ねる）＝インク色。左端に色マーカーで系列同定を補助。
     ax.set_title(title, color=INK_PRIMARY, fontsize=16, fontweight="bold",
                  pad=10, loc="left")
@@ -158,13 +184,11 @@ def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
         ax.set_xticklabels(labels, color=INK_MUTED, fontsize=13.5)
     else:
         ax.set_xticklabels([""] * len(x))
+    # 整数目盛りに限定（値の幅が小さいとき小数目盛りが int 丸めで「3,409」のように重複表示されるのを防ぐ）
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _pos: f"{int(v):,}"))
     ax.tick_params(axis="y", colors=INK_MUTED, labelsize=12)
     ax.tick_params(axis="x", colors=INK_MUTED, length=0)
-
-    vmin, vmax = min(vs), max(vs)
-    span = max(vmax - vmin, 1)
-    ax.set_ylim(vmin - span * 0.30, vmax + span * 0.42)
     ax.set_xlim(-0.4, len(x) - 0.6)
 
     ax.grid(axis="y", color=GRID, linewidth=1, zorder=0)
@@ -176,34 +200,37 @@ def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
 
 
 def render_chart(points, out_path):
-    """上下2パネル（ロール保有者・販売部数）のスモールマルチプル PNG を書き出す。"""
+    """3パネル（ロール保有者・販売部数・Rondo読者数）のスモールマルチプル PNG を書き出す。"""
     font_name = pick_font()
     plt.rcParams["font.family"] = font_name
     plt.rcParams["axes.unicode_minus"] = False
 
-    labels = [_md(d) for d, _, _ in points]
-    role_vals = [r for _, r, _ in points]
-    buyer_vals = [b for _, _, b in points]
+    labels = [_md(p[0]) for p in points]
+    role_vals = [p[1] for p in points]
+    buyer_vals = [p[2] for p in points]
+    rondo_vals = [p[3] for p in points]
     x = list(range(len(points)))
 
-    # 1280x800 @ dpi 100（水準の違う2指標を二重軸にせず上下に分離）
-    fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1, figsize=(12.8, 8.0), dpi=100, sharex=True,
+    # 1280x1100 @ dpi 100（水準の違う3指標を二重軸にせず縦に分離）
+    fig, (ax_top, ax_mid, ax_bot) = plt.subplots(
+        3, 1, figsize=(12.8, 11.0), dpi=100, sharex=True,
     )
     fig.patch.set_facecolor(SURFACE)
 
     fig.suptitle(
-        "明鏡ロール保有者・販売部数の推移",
+        "明鏡ロール保有者・販売部数・Rondo読者数の推移",
         color=INK_PRIMARY, fontsize=23, fontweight="bold",
-        x=0.09, y=0.975, ha="left",
+        x=0.09, y=0.98, ha="left",
     )
 
     _draw_panel(ax_top, x, role_vals, labels, SERIES_ROLE,
                 "明鏡ロール保有者（名）", show_xlabels=False)
-    _draw_panel(ax_bot, x, buyer_vals, labels, SERIES_BUYERS,
-                "販売部数（累計・部）", show_xlabels=True)
+    _draw_panel(ax_mid, x, buyer_vals, labels, SERIES_BUYERS,
+                "販売部数（累計・部）", show_xlabels=False)
+    _draw_panel(ax_bot, x, rondo_vals, labels, SERIES_RONDO,
+                "Rondo読者数（配信対象・名）", show_xlabels=True)
 
-    fig.subplots_adjust(left=0.09, right=0.97, top=0.88, bottom=0.08, hspace=0.28)
+    fig.subplots_adjust(left=0.09, right=0.97, top=0.91, bottom=0.06, hspace=0.30)
     try:
         fig.savefig(out_path, facecolor=SURFACE)
     except Exception as e:
@@ -245,7 +272,7 @@ def post_chart(channel_id, image_path, content):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="明鏡ロール保有者の推移グラフ 生成／投稿")
+    parser = argparse.ArgumentParser(description="明鏡ロール保有者・販売部数・Rondo読者数の推移グラフ 生成／投稿")
     parser.add_argument("--dry-run", action="store_true", help="PNG 生成のみ（投稿しない）")
     parser.add_argument("--history", default=HISTORY_PATH, help="履歴JSONファイルのパス")
     parser.add_argument("--out", default=DEFAULT_OUT, help="出力 PNG パス")
@@ -261,7 +288,7 @@ def main():
             print("----- DRY RUN（投稿しません）-----")
             return
 
-        content = f"【明鏡ロール保有者・販売部数の推移】（{_md(latest_date)}時点）"
+        content = f"【明鏡ロール保有者・販売部数・Rondo読者数の推移】（{_md(latest_date)}時点）"
         post_chart(AFFILIATE_CHANNEL_ID, out_path, content)
         print(f"投稿完了: アフィリエイト通知チャンネルへ画像を投稿（{content}）")
     except ChartError as e:

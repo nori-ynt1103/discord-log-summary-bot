@@ -31,6 +31,16 @@ jobs:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
         run: python3 member_watch.py
 
+      # Rondo読者数（配信対象）を本日エントリにマージ。member_watch の後・Commit history の前に置く
+      # （upsert_today がエントリを置き換えるため後段で足す／前に置かないと rondo 値がコミットされない）。
+      # 失敗しても後続（履歴コミット・グラフ投稿）は止めない。グラフ側は rondo 欠損を「データ収集中」で描く。
+      - name: Run rondo watch
+        continue-on-error: true
+        env:
+          RONDO_BASE_URL: https://rondo.nori-letter.com
+          RONDO_ADMIN_TOKEN: ${{ secrets.RONDO_ADMIN_TOKEN }}
+        run: python3 rondo_watch.py
+
       - name: Commit history
         run: |
           git config user.name "github-actions[bot]"
