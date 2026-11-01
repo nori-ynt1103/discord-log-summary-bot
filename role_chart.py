@@ -171,7 +171,13 @@ def _draw_panel(ax, x, values, labels, color, title, show_xlabels):
 
     vmin, vmax = min(vs), max(vs)
     span = max(vmax - vmin, 1)
-    ax.set_ylim(vmin - span * 0.30, vmax + span * 0.42)
+    lo, hi = vmin - span * 0.30, vmax + span * 0.42
+    if hi - lo < 4:
+        # 値の幅が小さい（点が1つ・横ばい）と整数目盛りが同じ数字で何段も並ぶので、
+        # 最低でも4目盛り分の幅を確保する
+        mid = (vmin + vmax) / 2
+        lo, hi = mid - 2.2, mid + 2.6
+    ax.set_ylim(lo, hi)
 
 
 def _style_axes(ax, x, labels, title, show_xlabels):
