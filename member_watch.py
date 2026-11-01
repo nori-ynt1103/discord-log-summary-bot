@@ -48,7 +48,12 @@ AFFILIATE_CHANNEL_ID = "1514734016400592936"  # アフィリエイト通知チ�
 MEIKYO_ROLE_ID = "1489786702032670730"     # 「明鏡」ロール
 NORI_USER_ID = "806493934183514123"        # のりさん（DM手動入力の送信元）
 
-CUMULATIVE_RE = re.compile(r"累計\s*([\d,]+)\s*部")
+# 2026-11-01から同じチャンネルに『Rondo』（別商品）の成約通知も流れるようになったため、
+# 商品名を必ず伴う形でしか拾わない（最新の「累計 N 部」を無条件に取ると別商品の数を拾う）。
+def cumulative_re(product):
+    return re.compile(r"『" + re.escape(product) + r"』.*?累計\s*([\d,]+)\s*部", re.DOTALL)
+
+CUMULATIVE_RE = cumulative_re("明鏡")
 
 # --- DM手動入力のロール数報告の解釈 ---
 # 受理は次の2通り（2026-08-03に部分一致へ緩和）。
@@ -284,9 +289,10 @@ def _searchable_text(msg):
     return "\n".join(parts)
 
 
-def fetch_buyer_count(max_messages=500):
+def fetch_buyer_count(max_messages=500, product="明鏡"):
     """アフィリエイト通知チャンネルを新しい順にページネーションし、
-    「累計 N 部」に最初にマッチした数値を返す。見つからなければ None。"""
+    「『<product>』… 累計 N 部」に最初にマッチした数値を返す。見つからなければ None。"""
+    pattern = cumulative_re(product)
     before = None
     scanned = 0
     while scanned < max_messages:
@@ -311,7 +317,7 @@ def fetch_buyer_count(max_messages=500):
             break
         for msg in batch:
             scanned += 1
-            m = CUMULATIVE_RE.search(_searchable_text(msg))
+            m = pattern.search(_searchable_text(msg))
             if m:
                 return int(m.group(1).replace(",", ""))
             if scanned >= max_messages:
