@@ -6,6 +6,9 @@
 - 手動入力をどう扱ったかは、毎回のりさんへDMで受領報告（レシート）を返す。
   解釈できなかった発言があればそれも知らせる（黙って無視しない・2026-08-03追加）
 - 明鏡購入者数（累計）をアフィリエイト通知チャンネルのメッセージから取得
+- 同じチャンネルから『Rondo』（同じ販売者の別商品・2026-11-01発売）の販売部数（累計）も取得し、
+  履歴に rondo_buyers として保存し、ラウンジ投稿本文（購入者行・推移表）と推移グラフの3段目に出す。
+  取れなくても致命エラーにはしない（None のまま進み、本文は「集計準備中」・表は「—」）
 - 履歴（history/member_watch_history.json）に日次で追記し、前日比つきの本文を組み立てて
   ラウンジチャンネルへ投稿する。
 
@@ -17,7 +20,7 @@ GitHub Actions で毎朝 5:00 JST 実行する想定。
   python3 member_watch.py               # 本番投稿
 テスト（API をスキップしてダミー値で本文/履歴処理を確認）:
   python3 member_watch.py --dry-run \
-      --test-members 8971 --test-buyers 3059 --test-role 2489 \
+      --test-members 8971 --test-buyers 3059 --test-role 2489 [--test-rondo 52] \
       --history /path/to/temp_history.json
 """
 
@@ -347,10 +350,17 @@ def save_history(path, history):
         f.write("\n")
 
 
-def upsert_today(history, date_str, members, buyers, role):
+def upsert_today(history, date_str, members, buyers, role, rondo_buyers=None):
     """同日エントリがあれば置き換え、なければ末尾に追記する。
-    追記後の履歴と、直前エントリ（なければ None）を返す。"""
-    entry = {"date": date_str, "members": members, "buyers": buyers, "role": role}
+    追記後の履歴と、直前エントリ（なければ None）を返す。
+    rondo_buyers は『Rondo』販売部数（累計）。取れなかった日は None で保存する。"""
+    entry = {
+        "date": date_str,
+        "members": members,
+        "buyers": buyers,
+        "role": role,
+        "rondo_buyers": rondo_buyers,
+    }
     idx = next((i for i, e in enumerate(history) if e.get("date") == date_str), None)
     if idx is not None:
         prev = history[idx - 1] if idx > 0 else None
@@ -398,7 +408,7 @@ def _pad(s, width):
 def build_recent_table(history, days=7):
     """直近 days 日分の推移テーブル（コードブロック内の中身）を返す。"""
     recent = history[-days:]
-    headers = ["日付", "参加者", "購入者", "ロール"]
+    headers = ["日付", "参加者", "購入者", "ロール", "Rondo"]
     rows = [headers]
     for e in recent:
         rows.append([
@@ -408,6 +418,8 @@ def build_recent_table(history, days=7):
             f"{e['buyers']:,}" if e.get("buyers") is not None else "—",
             # ロール未集計（暫定モード）は「—」で表す
             f"{e['role']:,}" if e.get("role") is not None else "—",
+            # Rondo販売部数（2026-11-02〜記録。それ以前・取得失敗日は「—」）
+            f"{e['rondo_buyers']:,}" if e.get("rondo_buyers") is not None else "—",
         ])
     # 列ごとの最大表示幅
     ncol = len(headers)
@@ -433,6 +445,14 @@ def build_body(history, entry, prev):
 
     members_str = f"{members:,}" if members is not None else "-"
     buyers_str = f"{buyers:,}" if buyers is not None else "-"
+
+    # Rondo購入者数（累計）。取れなかった日は「集計準備中」（落とさない）
+    rondo = entry.get("rondo_buyers")
+    if rondo is None:
+        rondo_line = "・Rondo購入者：（集計準備中）"
+    else:
+        rondo_diff = diff_label(rondo, prev.get("rondo_buyers") if prev else None)
+        rondo_line = f"・Rondo購入者：{rondo:,}名{rondo_diff}"
     members_note = "（概算）" if approximate else ""
 
     table = build_recent_table(history)
@@ -454,6 +474,7 @@ def build_body(history, entry, prev):
         f"【メンバー数を観測（{date_md}）】\n"
         f"・参加者：{members_str}名{members_note}{members_diff}\n"
         f"・明鏡購入者：{buyers_str}名{buyers_diff}\n"
+        f"{rondo_line}\n"
         f"{role_line}\n"
         f"\n"
         f"■ 直近1週間の推移\n"
@@ -563,10 +584,13 @@ def main():
     parser.add_argument("--test-members", type=int, default=None)
     parser.add_argument("--test-buyers", type=int, default=None)
     parser.add_argument("--test-role", type=int, default=None)
+    # 任意（テストモード時のみ使用。指定なしなら Rondo 販売部数は None）
+    parser.add_argument("--test-rondo", type=int, default=None)
     args = parser.parse_args()
 
     test_mode = args.test_members is not None or args.test_buyers is not None or args.test_role is not None
     dm_info = None
+    rondo_buyers = None
 
     if not test_mode and not DISCORD_BOT_TOKEN:
         print("エラー: DISCORD_BOT_TOKEN が未設定です（.env / GitHub Secrets を確認）。", file=sys.stderr)
@@ -581,6 +605,7 @@ def main():
             buyers = args.test_buyers
             role = args.test_role
             role_source = "test" if role is not None else "none"
+            rondo_buyers = args.test_rondo
         else:
             members, role, role_source, dm_info = fetch_member_and_role_counts()
             buyers = fetch_buyer_count()
@@ -589,15 +614,28 @@ def main():
                     "明鏡購入者数（累計）が直近500件のメッセージから見つかりませんでした。"
                     "\n→ 正規表現・チャンネル・スキャン件数を確認してください。"
                 )
+            # 『Rondo』販売部数（累計）。グラフ3段目用の補助データなので、取れなくても止めない。
+            try:
+                rondo_buyers = fetch_buyer_count(product="Rondo")
+            except Exception as e:
+                rondo_buyers = None
+                print(f"[Rondo] 販売部数の取得に失敗（本編は続行）: {e}", file=sys.stderr)
+            else:
+                if rondo_buyers is None:
+                    print("[Rondo] 直近500件に『Rondo』の累計が見つかりませんでした（本編は続行）。",
+                          file=sys.stderr)
     except WatchError as e:
         print(f"エラー: {e}", file=sys.stderr)
         sys.exit(1)
 
     # ロール数のソース（自動集計／DM手動／なし）を明示
     print(f"[ロール数ソース] {SOURCE_LABEL.get(role_source, role_source)}", file=sys.stderr)
+    print(f"[Rondo販売部数] {rondo_buyers if rondo_buyers is not None else '取得なし'}", file=sys.stderr)
 
     history = load_history(args.history)
-    history, entry, prev = upsert_today(history, today_str, members, buyers, role)
+    history, entry, prev = upsert_today(
+        history, today_str, members, buyers, role, rondo_buyers
+    )
     body = build_body(history, entry, prev)
 
     if args.dry_run:
@@ -611,7 +649,7 @@ def main():
 
     save_history(args.history, history)
     post_message(LOUNGE_CHANNEL_ID, body)
-    print(f"投稿完了: 参加者{members} / 購入者{buyers} / ロール{role}")
+    print(f"投稿完了: 参加者{members} / 購入者{buyers} / ロール{role} / Rondo販売{rondo_buyers}")
     if not test_mode:
         send_receipt(entry, prev, role_source, dm_info)
 

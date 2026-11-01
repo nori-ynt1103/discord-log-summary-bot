@@ -1,16 +1,17 @@
 """
-明鏡ロール保有者・販売部数・Rondo読者数の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿する。
+明鏡ロール保有者・販売部数・Rondo販売部数の推移グラフを生成し、アフィリエイト通知チャンネルへ画像投稿する。
 
 - history/member_watch_history.json から直近7日分（role が非 null の日）を読み、
-  「明鏡ロール保有者」「販売部数（buyers）」「Rondo読者数（rondo＝配信対象）」の推移を
+  「明鏡ロール保有者」「販売部数（buyers）」「Rondo販売部数（rondo_buyers＝『Rondo』の累計）」の推移を
   上中下3パネルのスモールマルチプルとして折れ線グラフ PNG 化する。
-- rondo は rondo_watch.py が書き込む。値が1つも無いとき（導入直後・取得失敗が続いたとき）は
-  Rondo パネルに「データ収集中」と表示するだけで、他の2パネルの生成・投稿は止めない。
+- rondo_buyers は member_watch.py がアフィリエイト通知チャンネルの『Rondo』成約通知から書き込む。
+  値が1つも無いとき（導入直後・取得失敗が続いたとき）は Rondo パネルに「データ収集中」と表示するだけで、
+  他の2パネルの生成・投稿は止めない。取れなかった日は線が切れる。
 - 生成後、アフィリエイト通知チャンネル（1514734016400592936）へ multipart で添付投稿する。
 - グラフ生成/投稿の失敗は明確なエラーで exit 1（黙殺しない）。
 
 配色・フォーム・軸・ダークテーマ対応は dataviz スキルの設計指針に従う。ロール(2,449〜)・
-販売部数(3,003〜)・Rondo読者数は水準が違うため二重軸は使わず、3パネルに分けて各パネルを独立した
+販売部数(3,003〜)・Rondo販売部数は水準が違うため二重軸は使わず、3パネルに分けて各パネルを独立した
 1軸で描く（各パネルは単一系列なので凡例は置かず、パネル見出しが系列名を兼ねる。各点に直接ラベル）。
 
 使い方:
@@ -49,7 +50,7 @@ DEFAULT_OUT = os.path.join(os.path.dirname(__file__), "role_chart.png")
 SURFACE = "#1a1a19"      # ダークチャートサーフェス
 SERIES_ROLE = "#3987e5"  # 系列1 blue（dark step）… ロール保有者
 SERIES_BUYERS = "#d95926" # 系列2 orange（dark step）… 販売部数
-SERIES_RONDO = "#2e9e6e"  # 系列3 green … Rondo読者数（配信対象）
+SERIES_RONDO = "#2e9e6e"  # 系列3 green … Rondo販売部数（累計）
 INK_PRIMARY = "#ffffff"  # 主要インク
 INK_SECOND = "#c3c2b7"   # 二次インク（値ラベル）
 INK_MUTED = "#898781"    # 軸/目盛ラベル
@@ -98,7 +99,7 @@ def _md(date_str):
 def load_recent_series(path, days=7):
     """履歴から role が非 null のエントリを日付順に読み、直近 days 件を返す。
     x 軸を全パネルで揃えるため、対象日は「role が非 null の日」で固定し、
-    その各日の buyers・rondo も併せて返す（欠損日は None）。
+    その各日の buyers・rondo_buyers も併せて返す（欠損日は None）。
     返り値: [(date_str, role_int, buyers_int|None, rondo_int|None), ...]。空なら ChartError。"""
     if not os.path.exists(path):
         raise ChartError(f"履歴ファイルが見つかりません: {path}")
@@ -113,7 +114,7 @@ def load_recent_series(path, days=7):
             e["date"],
             int(e["role"]),
             int(e["buyers"]) if e.get("buyers") is not None else None,
-            int(e["rondo"]) if e.get("rondo") is not None else None,
+            int(e["rondo_buyers"]) if e.get("rondo_buyers") is not None else None,
         )
         for e in history
         if e.get("role") is not None and e.get("date")
@@ -200,7 +201,7 @@ def _style_axes(ax, x, labels, title, show_xlabels):
 
 
 def render_chart(points, out_path):
-    """3パネル（ロール保有者・販売部数・Rondo読者数）のスモールマルチプル PNG を書き出す。"""
+    """3パネル（ロール保有者・販売部数・Rondo販売部数）のスモールマルチプル PNG を書き出す。"""
     font_name = pick_font()
     plt.rcParams["font.family"] = font_name
     plt.rcParams["axes.unicode_minus"] = False
@@ -218,7 +219,7 @@ def render_chart(points, out_path):
     fig.patch.set_facecolor(SURFACE)
 
     fig.suptitle(
-        "明鏡ロール保有者・販売部数・Rondo読者数の推移",
+        "明鏡ロール保有者・販売部数・Rondo販売部数の推移",
         color=INK_PRIMARY, fontsize=23, fontweight="bold",
         x=0.09, y=0.98, ha="left",
     )
@@ -226,9 +227,9 @@ def render_chart(points, out_path):
     _draw_panel(ax_top, x, role_vals, labels, SERIES_ROLE,
                 "明鏡ロール保有者（名）", show_xlabels=False)
     _draw_panel(ax_mid, x, buyer_vals, labels, SERIES_BUYERS,
-                "販売部数（累計・部）", show_xlabels=False)
+                "明鏡販売部数（累計・部）", show_xlabels=False)
     _draw_panel(ax_bot, x, rondo_vals, labels, SERIES_RONDO,
-                "Rondo読者数（配信対象・名）", show_xlabels=True)
+                "Rondo販売部数（累計・部）", show_xlabels=True)
 
     fig.subplots_adjust(left=0.09, right=0.97, top=0.91, bottom=0.06, hspace=0.30)
     try:
@@ -272,7 +273,7 @@ def post_chart(channel_id, image_path, content):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="明鏡ロール保有者・販売部数・Rondo読者数の推移グラフ 生成／投稿")
+    parser = argparse.ArgumentParser(description="明鏡ロール保有者・販売部数・Rondo販売部数の推移グラフ 生成／投稿")
     parser.add_argument("--dry-run", action="store_true", help="PNG 生成のみ（投稿しない）")
     parser.add_argument("--history", default=HISTORY_PATH, help="履歴JSONファイルのパス")
     parser.add_argument("--out", default=DEFAULT_OUT, help="出力 PNG パス")
@@ -288,7 +289,7 @@ def main():
             print("----- DRY RUN（投稿しません）-----")
             return
 
-        content = f"【明鏡ロール保有者・販売部数・Rondo読者数の推移】（{_md(latest_date)}時点）"
+        content = f"【明鏡ロール保有者・販売部数・Rondo販売部数の推移】（{_md(latest_date)}時点）"
         post_chart(AFFILIATE_CHANNEL_ID, out_path, content)
         print(f"投稿完了: アフィリエイト通知チャンネルへ画像を投稿（{content}）")
     except ChartError as e:
