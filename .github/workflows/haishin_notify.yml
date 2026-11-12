@@ -1,0 +1,122 @@
+name: Haishin Notify (イケハヤさん新着通知)
+
+# 順序：①取得 → ②新着判定 → ③既読を haishin-state ブランチへ push（成功したときだけ）→ ④Discordへ1通投稿
+# 既読は main に置かない（main へ push すると member_watch.yml の素の git push が落ち得るため）
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = 投稿せず既読も保存しない。取得結果と文面をログに出すだけ"
+        type: boolean
+        default: true
+      channel_id:
+        description: "投稿先チャンネルID"
+        type: string
+        default: "1489427801143509055"
+      replay_hours:
+        description: "dry_run のときだけ有効。既読を無視して直近N時間を新着扱いにして文面を作る（0 = 使わない）"
+        type: string
+        default: "0"
+  # 定期実行を始めるときは、workflow_dispatch と同じ階層（on: の直下）に次の2行を足す。
+  # schedule 起動は inputs が空になり、下の DRY_RUN が false（本番）になる。
+  # schedule:
+  #   - cron: "*/30 * * * *"
+
+concurrency:
+  group: haishin-notify
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # haishin-state ブランチへの push 用
+    env:
+      # 手動起動は入力どおり。schedule 起動（inputs が空）は本番扱い
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+      CHANNEL_ID: ${{ inputs.channel_id || '1489427801143509055' }}
+      REPLAY_HOURS: ${{ inputs.replay_hours || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 既読ファイルを取り出す（haishin-state ブランチ）
+        run: |
+          STATE_DIR="$RUNNER_TEMP/haishin-state"
+          echo "STATE_DIR=$STATE_DIR" >> "$GITHUB_ENV"
+          if git ls-remote --exit-code --heads origin haishin-state >/dev/null 2>&1; then
+            git fetch -q origin haishin-state:refs/remotes/origin/haishin-state
+            git worktree add -q -B haishin-state "$STATE_DIR" origin/haishin-state
+            echo "既読ブランチ haishin-state を取り出した"
+          else
+            # まだブランチがない：空の既読として扱う（作成されるのは本番で push したときだけ）
+            git worktree add -q --detach "$STATE_DIR" HEAD
+            git -C "$STATE_DIR" checkout -q --orphan haishin-state
+            git -C "$STATE_DIR" rm -rf -q .
+            echo "既読ブランチ haishin-state はまだない（空の既読として扱う）"
+          fi
+
+      - name: 新着を判定
+        id: check
+        env:
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
+        run: |
+          echo "dry_run=$DRY_RUN channel_id=$CHANNEL_ID replay_hours=$REPLAY_HOURS"
+          if [ "$DRY_RUN" = "true" ]; then
+            python3 haishin_notify.py --state "$STATE_DIR/haishin_seen.json" --dry-run --replay-hours "$REPLAY_HOURS"
+          else
+            python3 haishin_notify.py --state "$STATE_DIR/haishin_seen.json" --message-out "$RUNNER_TEMP/haishin_message.txt"
+          fi
+
+      - name: 投稿先チャンネルの確認（dry_run のみ・読み取りだけ）
+        if: env.DRY_RUN == 'true'
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+        run: python3 haishin_notify.py --check-channel "$CHANNEL_ID"
+
+      - name: 既読を保存（haishin-state ブランチへ push）
+        id: save
+        if: env.DRY_RUN != 'true'
+        run: |
+          cd "$STATE_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          [ -f haishin_seen.json ] && git add haishin_seen.json
+          if git diff --cached --quiet; then
+            echo "既読に変更なし。コミットしない"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ steps.check.outputs.has_message }}" = "true" ]; then
+              echo "::error::文面があるのに既読の変更がない（想定外）。投稿しない"
+              exit 1
+            fi
+            exit 0
+          fi
+          git commit -q -m "chore: 新着通知の既読を更新"
+          for i in 1 2 3 4; do
+            if git push -q origin HEAD:refs/heads/haishin-state; then
+              echo "既読を push した"
+              echo "pushed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "push に失敗（${i}回目）。取り込み直して再試行"
+            sleep $((i * 3))
+            if ! git pull -q --rebase origin haishin-state; then
+              git rebase --abort 2>/dev/null || true
+              echo "::error::既読の取り込みで衝突。投稿しない"
+              exit 1
+            fi
+          done
+          echo "::error::既読を push できなかった。投稿しない"
+          exit 1
+
+      - name: Discord へ投稿（既読の push に成功したときだけ）
+        if: env.DRY_RUN != 'true' && steps.check.outputs.has_message == 'true' && steps.save.outputs.pushed == 'true'
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          HAISHIN_DRY_RUN: ${{ env.DRY_RUN }}
+        run: python3 haishin_notify.py --post "$RUNNER_TEMP/haishin_message.txt" --channel-id "$CHANNEL_ID"

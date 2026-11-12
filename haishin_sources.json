@@ -1,0 +1,71 @@
+{
+  "_説明": "イケハヤさんの新着通知（haishin_notify.py）の媒体設定。enabled=false の媒体は巡回しない。確認日 2026-11-12。",
+  "sources": [
+    {
+      "key": "substack",
+      "type": "substack",
+      "url": "https://ihayato.substack.com/api/v1/archive?sort=new&limit=20",
+      "fallback_rss": "https://ihayato.substack.com/feed",
+      "enabled": true,
+      "_メモ": "既読キーは canonical_url（APIとRSSで同じ値になる）。RSSに退避したときは有料/無料の区別なしで表示"
+    },
+    {
+      "key": "standfm",
+      "type": "rss",
+      "kind": "音声",
+      "label": "stand.fm",
+      "url": "https://stand.fm/rss/649a5a0eb352effb9da47080",
+      "max_items": 30,
+      "enabled": true
+    },
+    {
+      "key": "youtube_daigaku",
+      "type": "youtube",
+      "kind": "動画",
+      "label": "YouTube",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCAUGjq16HfA97h4JhD85zWA",
+      "enabled": true,
+      "_メモ": "イケハヤ大学2.0"
+    },
+    {
+      "key": "youtube_radio",
+      "type": "youtube",
+      "kind": "動画",
+      "label": "YouTube",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC6IEwR-WtLcNLQz8GLlruAg",
+      "enabled": true,
+      "_メモ": "AIで稼ぐラジオ（stand.fmと同じ回が同じタイトルで出る）"
+    },
+    {
+      "key": "note",
+      "type": "rss",
+      "kind": "記事",
+      "label": "note",
+      "url": "https://note.com/ihayato/rss",
+      "enabled": true
+    },
+    {
+      "key": "brain",
+      "type": "brain",
+      "kind": "新教材",
+      "label": "Brain",
+      "url": "https://api.brain-market.com/v2/users/ikehaya/articles?page=1",
+      "enabled": true,
+      "_メモ": "既読キーは記事ID（タイトルは後から変わるため）"
+    },
+    {
+      "key": "x_article",
+      "type": "x_article",
+      "kind": "X記事",
+      "label": "X",
+      "username": "IHayato",
+      "interval_minutes": 60,
+      "enabled": true,
+      "_メモ": "X API v2（従量課金）。読み取りは1時間に1回まで。環境変数 X_BEARER_TOKEN が空ならスキップ。日常の投稿は通知しない"
+    }
+  ],
+  "audio_also_on": [
+    {"label": "Spotify", "url": "https://open.spotify.com/show/4gdRLqud9wvfGm1SZ3f9xT"},
+    {"label": "Voicy", "url": "https://voicy.jp/channel/585"}
+  ]
+}
