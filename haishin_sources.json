@@ -24,8 +24,9 @@
       "kind": "動画",
       "label": "YouTube",
       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCAUGjq16HfA97h4JhD85zWA",
+      "exclude_shorts": true,
       "enabled": true,
-      "_メモ": "イケハヤ大学2.0"
+      "_メモ": "イケハヤ大学2.0。exclude_shorts=true で Shorts（RSSのlinkが /shorts/）は通知せず既読化のみ"
     },
     {
       "key": "youtube_radio",
@@ -33,6 +34,7 @@
       "kind": "動画",
       "label": "YouTube",
       "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC6IEwR-WtLcNLQz8GLlruAg",
+      "exclude_shorts": true,
       "enabled": true,
       "_メモ": "AIで稼ぐラジオ（stand.fmと同じ回が同じタイトルで出る）"
     },

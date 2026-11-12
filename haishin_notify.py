@@ -379,11 +379,29 @@ def md_escape(s):
     return "".join(out)
 
 
+# 後追い判定と束ねの単位。「読む」と「聴く／観る」は同じタイトルでも別物として扱う
+READ_KINDS = ("記事", "X記事", "新教材")
+
+
+def kind_group(kind):
+    return "読む" if kind in READ_KINDS else "聴く"
+
+
+def dedup_key(it):
+    """種別グループ＋正規化タイトル。タイトルが空なら None（束ねない・覚えない）"""
+    n = norm_title(it["title"])
+    return (kind_group(it["kind"]) + ":" + n) if n else None
+
+
+def is_shorts(it):
+    return "/shorts/" in (it.get("url") or "")
+
+
 def group_items(items):
     groups = {}
     order = []
     for it in items:
-        key = norm_title(it["title"]) or ("id:" + it["source"] + ":" + it["id"])
+        key = dedup_key(it) or ("id:" + it["source"] + ":" + it["id"])
         if key not in groups:
             groups[key] = []
             order.append(key)
@@ -507,7 +525,7 @@ def run_check(args):
             if first_run:
                 log("[%s] 初回のため通知なし・基準（since_id）の記録のみ" % key)
                 for it in items:
-                    absorbed_titles.add(norm_title(it["title"]))
+                    absorbed_titles.add(dedup_key(it))
                 continue
             new_items.extend(items)
             continue
@@ -544,7 +562,7 @@ def run_check(args):
             new = []
             for i in items:
                 if i["published"] and now - i["published"] <= NOTIFY_WINDOW:
-                    absorbed_titles.add(norm_title(i["title"]))
+                    absorbed_titles.add(dedup_key(i))
             log("[%s] 取得%d件・初回のため通知なし・既読化のみ（最新 %s）" % (key, len(items), fmt_jst(latest["published"])))
         else:
             new = [i for i in items if i["id"] not in seen_set]
@@ -558,6 +576,11 @@ def run_check(args):
             if fresh_ids:
                 state["sources"][key] = {"ids": (fresh_ids + seen_ids)[:MAX_SEEN]}
                 changed = True
+        if src.get("exclude_shorts"):
+            shorts = [i for i in new if is_shorts(i)]
+            for i in shorts:
+                log("  - Shorts のため通知せず既読化のみ：[%s] %s（%s）" % (key, i["title"][:40], fmt_jst(i["published"])))
+            new = [i for i in new if not is_shorts(i)]
         new_items.extend(new)
 
     # 公開から48時間を超えたものは通知しない
@@ -569,14 +592,15 @@ def run_check(args):
             log("  - 48時間超または日時不明のため通知せず既読化のみ：[%s] %s（%s）" % (
                 it["source"], it["title"][:40], fmt_jst(it["published"])))
 
-    # 通知済みタイトル（48時間）と同じものは後追いとして落とす
+    # 通知済み（48時間）の「種別グループ＋タイトル」と同じものは後追いとして落とす。
+    # 音声を通知済みでも、同じタイトルの記事は別グループなので通知する
     memory = {} if replay else dict(state.get("recent_titles") or {})
     active_memory = {k for k, v in memory.items() if parse_iso(v) and now - parse_iso(v) <= TITLE_MEMORY}
     groups = []
     for key, members in group_items(fresh):
         if not replay and (key in active_memory or key in absorbed_titles):
             for m in members:
-                log("  - 後追い（同じタイトルを通知済み）のため通知せず：[%s] %s" % (m["source"], m["title"][:40]))
+                log("  - 後追い（同じ種別で同じタイトルを通知済み）のため通知せず：[%s] %s" % (m["source"], m["title"][:40]))
             continue
         groups.append((key, members))
     groups.sort(key=lambda g: group_latest(g[1]), reverse=True)
