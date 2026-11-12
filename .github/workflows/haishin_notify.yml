@@ -1,26 +1,20 @@
-name: Haishin Notify (イケハヤさん新着通知)
+name: Haishin Notify (イケハヤさん新着通知・試運転専用)
 
-# 順序：①取得 → ②新着判定 → ③既読を haishin-state ブランチへ push（成功したときだけ）→ ④Discordへ1通投稿
-# 既読は main に置かない（main へ push すると member_watch.yml の素の git push が落ち得るため）
+# 【試運転専用】本番は旧Mac（稼働系）の cron（9:00・12:00・15:00）で動いている。
+# ここに schedule を足したり DRY_RUN を外したりすると二重投稿になる。足さないこと。
+# GitHub Actions のランナーからは Substack（Cloudflare の確認画面で403）と Brain（地域制限で403）が取れない（2026-11-12確認）。
+# このワークフローは、取得結果・文面・投稿先チャンネルの確認をログに出すだけ（投稿しない・既読を保存しない）。
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: "true = 投稿せず既読も保存しない。取得結果と文面をログに出すだけ"
-        type: boolean
-        default: true
       channel_id:
         description: "投稿先チャンネルID"
         type: string
         default: "1489427801143509055"
       replay_hours:
-        description: "dry_run のときだけ有効。既読を無視して直近N時間を新着扱いにして文面を作る（0 = 使わない）"
+        description: "既読を無視して直近N時間を新着扱いにして文面を作る（0 = 使わない）"
         type: string
         default: "0"
-  # 定期実行を始めるときは、workflow_dispatch と同じ階層（on: の直下）に次の2行を足す。
-  # schedule 起動は inputs が空になり、下の DRY_RUN が false（本番）になる。
-  # schedule:
-  #   - cron: "*/30 * * * *"
 
 concurrency:
   group: haishin-notify
@@ -31,10 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write  # haishin-state ブランチへの push 用
+      contents: read  # 試運転専用なので書き込み権限は持たせない（既読の push 手順は動かない）
     env:
-      # 手動起動は入力どおり。schedule 起動（inputs が空）は本番扱い
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
+      # 常に試運転。本番は旧Macの cron（ここを false にすると二重投稿になる）
+      DRY_RUN: "true"
       CHANNEL_ID: ${{ inputs.channel_id || '1489427801143509055' }}
       REPLAY_HOURS: ${{ inputs.replay_hours || '0' }}
     steps:

@@ -4,7 +4,9 @@
 
 - 本体：`haishin_notify.py`（標準ライブラリのみ）
 - 媒体設定：`haishin_sources.json`
-- 実行：`.github/workflows/haishin_notify.yml`（GitHub Actions）
+- 実行：`.github/workflows/haishin_notify.yml`（GitHub Actions・試運転専用）
+
+**本番は旧Mac（稼働系）の cron（9:00・12:00・15:00）で動いている。このリポジトリのワークフローは試運転専用で、常に dry_run（投稿しない・既読を保存しない）。ここに schedule を足したり dry_run を外したりすると二重投稿になる。** 本番のコードと導入・停止の手順は、メインの作業リポジトリの `scripts/haishin_notify/`（`haishin_notify_cron.sh`・`haishin_notify_install.sh`）にある。以下の「既読の置き場」「止め方」は、Actions で本番運用する前提だったときの設計メモ。
 
 ## 何を通知するか
 
@@ -49,7 +51,7 @@ push に失敗したら投稿しない。投稿に失敗したときは既読が
 
 ## 止め方
 
-- 定期実行を止める：`haishin_notify.yml` の `schedule:` の2行をコメントに戻して push する。または GitHub の Actions 画面でこのワークフローを Disable にする。
+- 定期実行を止める：本番は旧Macで `zsh scripts/haishin_notify_install.sh --uninstall`（メインの作業リポジトリ）。このリポジトリには schedule がない。
 - 媒体を1つだけ止める：`haishin_sources.json` のその媒体の `enabled` を `false` にする。
 
 ## X記事のトークンの入れ方
@@ -62,8 +64,8 @@ X は従量課金のため、読みに行くのは1時間に1回まで。初回�
 
 Actions 画面から「Haishin Notify」を Run workflow で実行する。
 
-- `dry_run`（既定 true）：投稿せず既読も保存しない。取得結果・投稿予定の文面・チャンネルの確認結果をログに出す。
-- `replay_hours`：dry_run のときだけ有効。既読を無視して直近N時間を新着扱いにした文面を作る（束ね方の確認用）。
+- 常に試運転：投稿せず既読も保存しない。取得結果・投稿予定の文面・チャンネルの確認結果をログに出す。
+- `replay_hours`：既読を無視して直近N時間を新着扱いにした文面を作る（束ね方の確認用）。
 - `channel_id`：投稿先（既定は明鏡サーバーの通知先チャンネル）。
 
 手元では `python3 haishin_notify.py --dry-run --replay-hours 36` で同じ確認ができる（トークン不要）。
