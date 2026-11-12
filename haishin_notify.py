@@ -482,7 +482,16 @@ def run_check(args):
                 attempted += 1
                 failed.append(key)
                 log("[%s] 取得失敗：%s（既読は進めない）" % (key, e))
-                # since_id は読み取り成功後にしか書き換えないので、ここでは間引き用の時刻だけが進む
+            except Exception as e:  # 想定外の応答でも他の媒体は巻き添えにしない
+                attempted += 1
+                failed.append(key)
+                log("[%s] 取得失敗：%s: %s（既読は進めない）" % (key, type(e).__name__, e))
+            if key in failed:
+                # 既読（since_id）は元に戻し、間引き用の時刻とユーザーIDだけ残す
+                old_since = (state.get("x") or {}).get("since_id")
+                xstate.pop("since_id", None)
+                if old_since:
+                    xstate["since_id"] = old_since
                 if xstate != (state.get("x") or {}):
                     state["x"] = xstate
                     changed = True
