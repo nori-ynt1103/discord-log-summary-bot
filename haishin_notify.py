@@ -249,7 +249,10 @@ def fetch_substack(src):
         return items, None
     except FetchError as e:
         api_err = str(e)
-    root = parse_xml(http_get(src["fallback_rss"]))  # ここで落ちたら媒体ごと失敗
+    try:
+        root = parse_xml(http_get(src["fallback_rss"]))
+    except FetchError as e:  # 両方落ちたら媒体ごと失敗。どちらの理由も残す
+        raise FetchError("API：%s ／ RSS：%s" % (api_err[:120], str(e)[:120]))
     items = []
     for it in root.iter("item"):
         link = (it.findtext("link") or "").strip()
